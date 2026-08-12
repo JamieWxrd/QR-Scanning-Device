@@ -75,8 +75,14 @@
 </head>
 <body>
 
-<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.0</span></h1>
-<p class="sub">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
+<div style="display:flex; justify-content:space-between; align-items:flex-start;">
+  <div>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.1</span></h1>
+    <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
+  </div>
+  <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
+</div>
+<div style="margin-bottom:16px;"></div>
 
 <div class="card">
   <div id="video-wrap">
@@ -110,7 +116,7 @@
   <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically — just tap into this box first so it works the same way here as it will on a dedicated scanning device.</p>
 </div>
 
-<div class="card">
+<div class="card" id="settings-panel" style="display:none;">
   <h2><span>Cloud Upload</span></h2>
   <label for="sheet-url">Google Apps Script Web App URL</label>
   <input type="text" id="sheet-url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
@@ -166,6 +172,12 @@ const focusSlider = document.getElementById('focus-slider');
 const sheetUrlInput = document.getElementById('sheet-url');
 const autoUploadToggle = document.getElementById('auto-upload-toggle');
 const uploadStatus = document.getElementById('upload-status');
+const settingsToggle = document.getElementById('settings-toggle');
+const settingsPanel = document.getElementById('settings-panel');
+
+settingsToggle.addEventListener('click', () => {
+  settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
+});
 
 // Default Google Apps Script Web App URL — pre-filled so it doesn't
 // need to be typed in on every device. Still editable/overridable below.
