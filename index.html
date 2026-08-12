@@ -75,7 +75,7 @@
 </head>
 <body>
 
-<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v1.3</span></h1>
+<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v1.4</span></h1>
 <p class="sub">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
 
 <div class="card">
@@ -84,8 +84,15 @@
     <div id="scan-box"></div>
   </div>
   <div class="status" id="cam-status">Tap "Start Camera" to begin scanning.</div>
+  <div id="zoom-wrap" style="display:none; margin-top:10px;">
+    <label for="zoom-slider">Zoom</label>
+    <input type="range" id="zoom-slider" min="1" max="1" step="0.1" value="1" style="width:100%;">
+  </div>
   <div class="row">
     <button class="btn-primary" id="cam-toggle">Start Camera</button>
+  </div>
+  <div class="row">
+    <button class="btn-secondary" id="capture-btn" style="display:none;">Capture Photo &amp; Scan</button>
   </div>
 </div>
 
@@ -126,6 +133,9 @@ const camToggle = document.getElementById('cam-toggle');
 const video = document.getElementById('video');
 const exportBtn = document.getElementById('export-btn');
 const clearBtn = document.getElementById('clear-btn');
+const captureBtn = document.getElementById('capture-btn');
+const zoomWrap = document.getElementById('zoom-wrap');
+const zoomSlider = document.getElementById('zoom-slider');
 
 let rows = [];       // {ts, value}
 let stream = null;
@@ -226,12 +236,27 @@ async function startCamera(){
         try{ await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); }
         catch(e){ /* ignore unsupported */ }
       }
+      // Expose a zoom slider if the device supports optical/digital zoom —
+      // small etched codes often just need to fill more of the frame.
+      if(caps.zoom && caps.zoom.max > caps.zoom.min){
+        zoomWrap.style.display = 'block';
+        zoomSlider.min = caps.zoom.min;
+        zoomSlider.max = caps.zoom.max;
+        zoomSlider.step = caps.zoom.step || 0.1;
+        zoomSlider.value = caps.zoom.min;
+        zoomSlider.oninput = () => {
+          track.applyConstraints({ advanced: [{ zoom: Number(zoomSlider.value) }] }).catch(()=>{});
+        };
+      } else {
+        zoomWrap.style.display = 'none';
+      }
     }
 
     scanning = true;
     const engine = barcodeDetector ? 'native scanner' : 'fallback scanner';
     camStatus.textContent = `Camera on (${engine}) — hold the code ~15–25cm away, steady, in good light.`;
     camToggle.textContent = 'Stop Camera';
+    captureBtn.style.display = 'block';
     requestAnimationFrame(tick);
   } catch(err){
     camStatus.textContent = 'Camera access failed: ' + err.message;
@@ -264,10 +289,73 @@ function stopCamera(){
   }
   camStatus.textContent = 'Camera stopped.';
   camToggle.textContent = 'Start Camera';
+  captureBtn.style.display = 'none';
+  zoomWrap.style.display = 'none';
 }
 
 camToggle.addEventListener('click', () => {
   scanning ? stopCamera() : startCamera();
+});
+
+// Takes one full-resolution still photo and decodes that, instead of a
+// live preview frame. Live video frames are often lower-res and
+// worse-exposed than an actual photo capture (which is what your phone's
+// camera app uses) — so this gives the decoder a much better source image
+// for small/etched/low-contrast codes.
+captureBtn.addEventListener('click', async () => {
+  if(!stream){ return; }
+  camStatus.textContent = 'Capturing...';
+  try{
+    const track = stream.getVideoTracks()[0];
+    let bitmap = null;
+
+    if('ImageCapture' in window){
+      try{
+        const capture = new ImageCapture(track);
+        const blob = await capture.takePhoto();
+        bitmap = await createImageBitmap(blob);
+      } catch(e){ bitmap = null; }
+    }
+    if(!bitmap){
+      // Fallback: grab whatever resolution the live track is giving us.
+      bitmap = await createImageBitmap(video);
+    }
+
+    const shotCanvas = document.createElement('canvas');
+    shotCanvas.width = bitmap.width;
+    shotCanvas.height = bitmap.height;
+    const shotCtx = shotCanvas.getContext('2d', { willReadFrequently: true });
+    shotCtx.drawImage(bitmap, 0, 0);
+
+    let value = null;
+
+    if(barcodeDetector){
+      try{
+        const results = await barcodeDetector.detect(shotCanvas);
+        if(results && results.length) value = results[0].rawValue;
+      } catch(e){ /* fall through */ }
+    }
+
+    if(!value){
+      let imageData = shotCtx.getImageData(0, 0, shotCanvas.width, shotCanvas.height);
+      imageData = boostContrast(imageData);
+      const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: 'attemptBoth'
+      });
+      if(code && code.data) value = code.data;
+    }
+
+    if(value){
+      camStatus.textContent = 'Scanned: ' + value;
+      camStatus.classList.add('good');
+      addRow(value);
+      setTimeout(() => camStatus.classList.remove('good'), 500);
+    } else {
+      camStatus.textContent = 'No code found in photo — try moving closer, reducing glare, or using the zoom slider.';
+    }
+  } catch(err){
+    camStatus.textContent = 'Capture failed: ' + err.message;
+  }
 });
 
 // Boosts contrast on low-contrast targets like laser-etched metal,
