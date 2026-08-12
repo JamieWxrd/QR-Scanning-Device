@@ -75,7 +75,7 @@
 </head>
 <body>
 
-<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v1.4</span></h1>
+<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v1.9</span></h1>
 <p class="sub">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
 
 <div class="card">
@@ -84,9 +84,17 @@
     <div id="scan-box"></div>
   </div>
   <div class="status" id="cam-status">Tap "Start Camera" to begin scanning.</div>
+  <div id="camera-wrap" style="display:none; margin-top:10px;">
+    <label for="camera-select">Camera lens</label>
+    <select id="camera-select" style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font-size:14px;"></select>
+  </div>
   <div id="zoom-wrap" style="display:none; margin-top:10px;">
     <label for="zoom-slider">Zoom</label>
     <input type="range" id="zoom-slider" min="1" max="1" step="0.1" value="1" style="width:100%;">
+  </div>
+  <div id="focus-wrap" style="display:none; margin-top:10px;">
+    <label for="focus-slider">Manual focus (near ↔ far)</label>
+    <input type="range" id="focus-slider" min="0" max="1" step="0.01" value="0" style="width:100%;">
   </div>
   <div class="row">
     <button class="btn-primary" id="cam-toggle">Start Camera</button>
@@ -103,13 +111,28 @@
 </div>
 
 <div class="card">
+  <h2><span>Cloud Upload</span></h2>
+  <label for="sheet-url">Google Apps Script Web App URL</label>
+  <input type="text" id="sheet-url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+  <div class="row" style="align-items:center; margin-top:10px;">
+    <label style="display:flex; align-items:center; gap:8px; margin:0; font-size:14px; color:var(--text);">
+      <input type="checkbox" id="auto-upload-toggle" style="width:auto;"> Auto-upload each scan
+    </label>
+  </div>
+  <div class="status" id="upload-status" style="margin-top:8px;"></div>
+</div>
+
+<div class="card">
   <h2>
     <span>Scanned Log</span>
     <span class="count-pill" id="count-pill">0 rows</span>
   </h2>
   <div id="table-wrap">
     <table>
-      <thead><tr><th>#</th><th>Timestamp</th><th>Value</th><th></th></tr></thead>
+      <thead><tr>
+        <th>#</th><th>Timestamp</th><th>Part Number</th><th>Item #</th>
+        <th>Batch</th><th>In-House</th><th></th>
+      </tr></thead>
       <tbody id="log-body"></tbody>
     </table>
   </div>
@@ -136,6 +159,59 @@ const clearBtn = document.getElementById('clear-btn');
 const captureBtn = document.getElementById('capture-btn');
 const zoomWrap = document.getElementById('zoom-wrap');
 const zoomSlider = document.getElementById('zoom-slider');
+const cameraWrap = document.getElementById('camera-wrap');
+const cameraSelect = document.getElementById('camera-select');
+const focusWrap = document.getElementById('focus-wrap');
+const focusSlider = document.getElementById('focus-slider');
+const sheetUrlInput = document.getElementById('sheet-url');
+const autoUploadToggle = document.getElementById('auto-upload-toggle');
+const uploadStatus = document.getElementById('upload-status');
+
+// Default Google Apps Script Web App URL — pre-filled so it doesn't
+// need to be typed in on every device. Still editable/overridable below.
+const DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwOoD7leJqKB6iuSCsNM7z-s1mtI0IUq_rBu9Zd20bIq__blG_12wm8xTTp-7GzGJ89/exec';
+
+// Restore saved cloud-upload settings.
+sheetUrlInput.value = localStorage.getItem('sheetUrl') || DEFAULT_SHEET_URL;
+autoUploadToggle.checked = localStorage.getItem('autoUpload') === 'true';
+sheetUrlInput.addEventListener('input', () => {
+  localStorage.setItem('sheetUrl', sheetUrlInput.value.trim());
+});
+autoUploadToggle.addEventListener('change', () => {
+  localStorage.setItem('autoUpload', autoUploadToggle.checked);
+});
+
+// Posts one parsed row to the Google Apps Script web app. Sent without
+// a JSON content-type header (as text/plain) so the browser skips the
+// CORS preflight, which Apps Script doesn't handle — this is the
+// standard workaround for talking to Apps Script from a web page.
+async function uploadRow(row){
+  const url = sheetUrlInput.value.trim();
+  if(!autoUploadToggle.checked || !url) return;
+  uploadStatus.textContent = 'Uploading...';
+  uploadStatus.style.color = '';
+  try{
+    // no-cors: we don't need to read the response, and Apps Script's
+    // redirect-based response doesn't reliably expose CORS headers —
+    // this still fires the write server-side.
+    await fetch(url, {
+      method: 'POST',
+      mode: 'no-cors',
+      body: JSON.stringify({
+        timestamp: row.ts,
+        partNumber: row.partNumber,
+        itemNumber: row.itemNumber,
+        batchNumber: row.batchNumber,
+        inHouse: row.inHouse
+      })
+    });
+    uploadStatus.textContent = 'Uploaded to sheet.';
+    uploadStatus.style.color = 'var(--good)';
+  } catch(err){
+    uploadStatus.textContent = 'Upload failed: ' + err.message;
+    uploadStatus.style.color = 'var(--bad)';
+  }
+}
 
 let rows = [];       // {ts, value}
 let stream = null;
@@ -148,6 +224,24 @@ function fmtTs(d){
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+// Code format: first 11 chars = part number, next 3 chars = item number
+// within the batch, then "/", then the batch number. A batch number
+// starting with "W" means the part was made in-house.
+function parseCode(value){
+  const slashIdx = value.indexOf('/');
+  if(slashIdx === -1 || slashIdx < 14){
+    // Doesn't match the expected format — keep the raw value visible
+    // and leave the parsed fields blank rather than guessing.
+    return { partNumber: '', itemNumber: '', batchNumber: '', inHouse: '' };
+  }
+  const head = value.slice(0, slashIdx);
+  const batchNumber = value.slice(slashIdx + 1);
+  const partNumber = head.slice(0, 11);
+  const itemNumber = head.slice(11, 14);
+  const inHouse = /^w/i.test(batchNumber) ? 'Yes' : 'No';
+  return { partNumber, itemNumber, batchNumber, inHouse };
+}
+
 function addRow(value){
   if(!value) return;
   // debounce duplicate scans within 2s (camera reads the same code repeatedly)
@@ -156,16 +250,22 @@ function addRow(value){
   lastValue = value; lastTime = now;
 
   const ts = fmtTs(new Date());
-  rows.push({ts, value});
+  const parsed = parseCode(value);
+  const row = { ts, value, ...parsed };
+  rows.push(row);
   render();
   if(navigator.vibrate) navigator.vibrate(60);
+  uploadRow(row);
 }
 
 function render(){
   logBody.innerHTML = '';
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${i+1}</td><td>${r.ts}</td><td>${escapeHtml(r.value)}</td><td class="del" data-i="${i}">✕</td>`;
+    tr.innerHTML = `<td>${i+1}</td><td>${r.ts}</td>`
+      + `<td>${escapeHtml(r.partNumber)}</td><td>${escapeHtml(r.itemNumber)}</td>`
+      + `<td>${escapeHtml(r.batchNumber)}</td><td>${escapeHtml(r.inHouse)}</td>`
+      + `<td class="del" data-i="${i}">✕</td>`;
     logBody.appendChild(tr);
   });
   emptyMsg.style.display = rows.length ? 'none' : 'block';
@@ -215,17 +315,42 @@ if('BarcodeDetector' in window){
   catch(e){ barcodeDetector = null; }
 }
 
-async function startCamera(){
+let camerasListed = false;
+
+// Lists available cameras so a macro/wide lens can be picked explicitly —
+// on many phones "environment" defaults to the main lens, which often
+// can't focus as close as a dedicated macro/ultra-wide lens can.
+async function populateCameraList(){
+  if(camerasListed) return;
   try{
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'environment',
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      }
-    });
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(d => d.kind === 'videoinput');
+    if(videoInputs.length > 1){
+      cameraSelect.innerHTML = '';
+      videoInputs.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${i+1}`;
+        cameraSelect.appendChild(opt);
+      });
+      cameraWrap.style.display = 'block';
+      camerasListed = true;
+    }
+  } catch(e){ /* ignore — selector just won't show */ }
+}
+
+async function startCamera(deviceId){
+  try{
+    const videoConstraints = deviceId
+      ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      : { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } };
+
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
     video.srcObject = stream;
     await video.play();
+
+    await populateCameraList();
+    if(deviceId) cameraSelect.value = deviceId;
 
     // Try to force continuous autofocus so close-up QR codes stay sharp.
     // Not all browsers support this — fails silently if unsupported.
@@ -250,6 +375,23 @@ async function startCamera(){
       } else {
         zoomWrap.style.display = 'none';
       }
+      // Expose a manual focus slider when the camera exposes a focus
+      // distance range — lets you dial in close focus directly instead
+      // of relying on autofocus, which some phones won't do below their
+      // "normal" minimum focus distance.
+      if(caps.focusDistance && caps.focusDistance.max > caps.focusDistance.min){
+        focusWrap.style.display = 'block';
+        focusSlider.min = caps.focusDistance.min;
+        focusSlider.max = caps.focusDistance.max;
+        focusSlider.step = caps.focusDistance.step || 0.01;
+        focusSlider.oninput = () => {
+          track.applyConstraints({
+            advanced: [{ focusMode: 'manual', focusDistance: Number(focusSlider.value) }]
+          }).catch(()=>{});
+        };
+      } else {
+        focusWrap.style.display = 'none';
+      }
     }
 
     scanning = true;
@@ -262,6 +404,11 @@ async function startCamera(){
     camStatus.textContent = 'Camera access failed: ' + err.message;
   }
 }
+
+cameraSelect.addEventListener('change', () => {
+  if(stream) stream.getTracks().forEach(t => t.stop());
+  startCamera(cameraSelect.value);
+});
 
 // Tap the video to force a refocus (helps on phones that don't
 // re-focus automatically once locked on a blurry frame).
@@ -291,6 +438,7 @@ function stopCamera(){
   camToggle.textContent = 'Start Camera';
   captureBtn.style.display = 'none';
   zoomWrap.style.display = 'none';
+  focusWrap.style.display = 'none';
 }
 
 camToggle.addEventListener('click', () => {
@@ -449,9 +597,16 @@ exportBtn.addEventListener('click', () => {
     alert('No scans to export yet.');
     return;
   }
-  const data = rows.map((r, i) => ({ '#': i+1, 'Timestamp': r.ts, 'Scanned Value': r.value }));
+  const data = rows.map((r, i) => ({
+    '#': i+1,
+    'Timestamp': r.ts,
+    'Part Number': r.partNumber,
+    'Item #': r.itemNumber,
+    'Batch': r.batchNumber,
+    'In-House': r.inHouse
+  }));
   const ws = XLSX.utils.json_to_sheet(data);
-  ws['!cols'] = [{wch:5},{wch:20},{wch:40}];
+  ws['!cols'] = [{wch:5},{wch:20},{wch:15},{wch:8},{wch:15},{wch:10}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Scans');
   const fname = `qr-scans-${fmtTs(new Date()).replace(/[: ]/g,'-')}.xlsx`;
