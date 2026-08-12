@@ -77,7 +77,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.3</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.4</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -258,15 +258,15 @@ function fmtTs(d){
 // starting with "W" means the part was made in-house.
 function parseCode(value){
   const slashIdx = value.indexOf('/');
-  if(slashIdx === -1 || slashIdx < 14){
+  if(slashIdx === -1 || slashIdx < 13){
     // Doesn't match the expected format — keep the raw value visible
     // and leave the parsed fields blank rather than guessing.
     return { partNumber: '', itemNumber: '', batchNumber: '', inHouse: '' };
   }
   const head = value.slice(0, slashIdx);
   const batchNumber = value.slice(slashIdx + 1);
-  const partNumber = head.slice(0, 11);
-  const itemNumber = head.slice(11, 14);
+  const partNumber = head.slice(0, 10);
+  const itemNumber = head.slice(10, 13);
   const inHouse = /^w/i.test(batchNumber) ? 'Yes' : 'No';
   return { partNumber, itemNumber, batchNumber, inHouse };
 }
