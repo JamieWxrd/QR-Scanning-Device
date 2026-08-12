@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.4</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -124,17 +124,7 @@
     <button id="settings-close" aria-label="Close" style="background:none; border:none; color:var(--muted); font-size:20px; padding:0; line-height:1; cursor:pointer;">✕</button>
   </h2>
 
-  <label for="ms-client-id">Azure App Client ID</label>
-  <input type="text" id="ms-client-id" placeholder="e.g. 3f9a1c2e-....-....-....-............" autocomplete="off">
-
-  <label for="ms-tenant-id" style="margin-top:10px; display:block;">Azure Tenant ID</label>
-  <input type="text" id="ms-tenant-id" placeholder="e.g. m-sport.onmicrosoft.com or a GUID" autocomplete="off">
-
-  <label for="sp-table-name" style="margin-top:10px; display:block;">Excel Table name</label>
-  <input type="text" id="sp-table-name" placeholder="ScanLog" autocomplete="off">
-  <p class="sub" style="margin-top:6px;">The name of the Table object in the workbook (Insert &gt; Table in Excel, then check the name under Table Design).</p>
-
-  <div class="row" style="margin-top:10px;">
+  <div class="row">
     <button class="btn-secondary" id="ms-signin-btn">Sign in with Microsoft</button>
   </div>
   <div class="status" id="ms-signin-status" style="margin-top:6px;">Not signed in.</div>
@@ -189,13 +179,14 @@ const cameraWrap = document.getElementById('camera-wrap');
 const cameraSelect = document.getElementById('camera-select');
 const focusWrap = document.getElementById('focus-wrap');
 const focusSlider = document.getElementById('focus-slider');
-const msClientIdInput = document.getElementById('ms-client-id');
-const msTenantIdInput = document.getElementById('ms-tenant-id');
-const spTableNameInput = document.getElementById('sp-table-name');
-
-// The scan log always writes to this specific SharePoint file — it
+// The scan log always writes to this specific SharePoint file/table — it
 // doesn't change, so it's hardcoded rather than asked for in settings.
 const SP_FILE_LINK = 'https://msportcouk.sharepoint.com/:x:/r/sites/M-SportBarcodingSP/Shared%20Documents/LIFING%20SHEET/RALLY%202%20LIFING%20TEMPLATE.xlsm?d=w237901f8e05e45a898e3ad590feb82a4&csf=1&web=1&e=9CvGu2';
+const SP_TABLE_NAME = 'ScanLog';
+
+const MS_CLIENT_ID = '973d7700-c939-4e2f-92f4-f3379ad7c3a5';
+const MS_TENANT_ID = '2358dd77-b9ae-40da-840d-3b64bf577371';
+
 const msSigninBtn = document.getElementById('ms-signin-btn');
 const msSigninStatus = document.getElementById('ms-signin-status');
 const autoUploadToggle = document.getElementById('auto-upload-toggle');
@@ -220,25 +211,11 @@ settingsToggle.addEventListener('click', () => {
 settingsClose.addEventListener('click', closeSettings);
 settingsBackdrop.addEventListener('click', closeSettings);
 
-// Restore saved SharePoint/Excel settings.
-msClientIdInput.value = localStorage.getItem('msClientId') || '';
-msTenantIdInput.value = localStorage.getItem('msTenantId') || '';
-spTableNameInput.value = localStorage.getItem('spTableName') || 'ScanLog';
 // Auto-upload defaults ON so scans send automatically without needing
 // to remember to flip the switch — respects a saved "false" if you've
 // explicitly turned it off before.
 autoUploadToggle.checked = localStorage.getItem('autoUpload') !== 'false';
 
-[msClientIdInput, msTenantIdInput, spTableNameInput].forEach(el => {
-  el.addEventListener('input', () => {
-    localStorage.setItem(
-      { 'ms-client-id':'msClientId', 'ms-tenant-id':'msTenantId', 'sp-table-name':'spTableName' }[el.id],
-      el.value.trim()
-    );
-    // Config changed — any cached file lookup is no longer trustworthy.
-    driveItemCache = null;
-  });
-});
 autoUploadToggle.addEventListener('change', () => {
   localStorage.setItem('autoUpload', autoUploadToggle.checked);
 });
@@ -256,10 +233,11 @@ function getRedirectUri(){
 }
 
 async function ensureMsal(){
-  const clientId = msClientIdInput.value.trim();
-  const tenantId = msTenantIdInput.value.trim();
-  if(!clientId) throw new Error('Enter the Azure App Client ID in settings first.');
-  if(!tenantId) throw new Error('Enter the Azure Tenant ID in settings first.');
+  const clientId = MS_CLIENT_ID;
+  const tenantId = MS_TENANT_ID;
+  if(!clientId || !tenantId){
+    throw new Error('Microsoft sign-in isn\'t configured yet — waiting on the Azure Client ID/Tenant ID.');
+  }
 
   if(!msalInstance || msalInstance.__clientId !== clientId || msalInstance.__tenantId !== tenantId){
     msalInstance = new msal.PublicClientApplication({
@@ -306,12 +284,15 @@ msSigninBtn.addEventListener('click', async () => {
   }
 });
 
-// Try to restore sign-in status on load if the settings are already filled in.
+// Try to restore sign-in status on load once the Client ID/Tenant ID
+// constants above are actually filled in.
 (async () => {
   try{
-    if(msClientIdInput.value.trim() && msTenantIdInput.value.trim()){
+    if(MS_CLIENT_ID && MS_TENANT_ID){
       await ensureMsal();
       updateSignInStatus();
+    } else {
+      msSigninStatus.textContent = 'Microsoft sign-in not configured yet.';
     }
   } catch(e){ /* not configured yet — leave as "Not signed in" */ }
 })();
@@ -400,7 +381,7 @@ function buildLifingRow(row){
 async function postRowToExcel(row){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
-  const table = spTableNameInput.value.trim() || 'ScanLog';
+  const table = SP_TABLE_NAME;
 
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/add`;
   const res = await fetch(url, {
