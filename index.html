@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.3</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.4</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -372,19 +372,57 @@ clearBtn.addEventListener('click', () => {
 });
 
 // --- manual / hardware scanner input (acts as keyboard, sends Enter) ---
+function submitManualValue(){
+  const val = manualInput.value.trim();
+  manualInput.value = '';
+  if(!val) return;
+  const result = addRow(val);
+  if(!result.ok && result.reason !== 'duplicate'){
+    camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
+    camStatus.classList.add('bad-flash');
+    setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
+  }
+}
+
 manualInput.addEventListener('keydown', e => {
   if(e.key === 'Enter'){
-    const val = manualInput.value.trim();
-    if(val){
-      const result = addRow(val);
-      if(!result.ok && result.reason !== 'duplicate'){
-        camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
-        camStatus.classList.add('bad-flash');
-        setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
-      }
-    }
-    manualInput.value = '';
+    submitManualValue();
   }
+});
+
+// Some hardware scanners (e.g. Zebra devices via DataWedge) don't send a
+// trailing Enter/action key by default, so text just sits in the box.
+// As a fallback, detect a fast burst of characters typed far quicker
+// than a human could type — that's almost certainly a scanner — and
+// auto-submit shortly after the burst ends, without waiting for Enter.
+let charTimestamps = [];
+let autoSubmitTimer = null;
+manualInput.addEventListener('input', () => {
+  const now = Date.now();
+  charTimestamps.push(now);
+  // Only look at recent keystrokes for the burst-speed check.
+  charTimestamps = charTimestamps.filter(t => now - t < 1000);
+
+  clearTimeout(autoSubmitTimer);
+  autoSubmitTimer = setTimeout(() => {
+    const val = manualInput.value.trim();
+    if(val.length < 4){ charTimestamps = []; return; }
+
+    // Average gap between keystrokes — scanners inject characters in a
+    // few milliseconds each; humans typing rarely average under ~60ms.
+    let fast = true;
+    if(charTimestamps.length > 1){
+      const gaps = [];
+      for(let i = 1; i < charTimestamps.length; i++){
+        gaps.push(charTimestamps[i] - charTimestamps[i-1]);
+      }
+      const avgGap = gaps.reduce((a,b) => a+b, 0) / gaps.length;
+      fast = avgGap < 30;
+    }
+
+    charTimestamps = [];
+    if(fast) submitManualValue();
+  }, 150);
 });
 
 // Keep the manual/hardware-scanner input focused so a Zebra device's
