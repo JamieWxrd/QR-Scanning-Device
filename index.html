@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.0</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.2</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -129,10 +129,6 @@
 
   <label for="ms-tenant-id" style="margin-top:10px; display:block;">Azure Tenant ID</label>
   <input type="text" id="ms-tenant-id" placeholder="e.g. m-sport.onmicrosoft.com or a GUID" autocomplete="off">
-
-  <label for="sp-file-link" style="margin-top:10px; display:block;">SharePoint Excel file link</label>
-  <input type="text" id="sp-file-link" placeholder="Paste the 'Copy link' URL from SharePoint" autocomplete="off">
-  <p class="sub" style="margin-top:6px;">In SharePoint/Excel Online: open the file, Share → Copy link, paste it here.</p>
 
   <label for="sp-table-name" style="margin-top:10px; display:block;">Excel Table name</label>
   <input type="text" id="sp-table-name" placeholder="ScanLog" autocomplete="off">
@@ -195,8 +191,11 @@ const focusWrap = document.getElementById('focus-wrap');
 const focusSlider = document.getElementById('focus-slider');
 const msClientIdInput = document.getElementById('ms-client-id');
 const msTenantIdInput = document.getElementById('ms-tenant-id');
-const spFileLinkInput = document.getElementById('sp-file-link');
 const spTableNameInput = document.getElementById('sp-table-name');
+
+// The scan log always writes to this specific SharePoint file — it
+// doesn't change, so it's hardcoded rather than asked for in settings.
+const SP_FILE_LINK = 'https://msportcouk.sharepoint.com/:x:/r/sites/M-SportBarcodingSP/Shared%20Documents/LIFING%20SHEET/RALLY%202%20LIFING%20TEMPLATE.xlsm?d=w237901f8e05e45a898e3ad590feb82a4&csf=1&web=1&e=9CvGu2';
 const msSigninBtn = document.getElementById('ms-signin-btn');
 const msSigninStatus = document.getElementById('ms-signin-status');
 const autoUploadToggle = document.getElementById('auto-upload-toggle');
@@ -224,17 +223,16 @@ settingsBackdrop.addEventListener('click', closeSettings);
 // Restore saved SharePoint/Excel settings.
 msClientIdInput.value = localStorage.getItem('msClientId') || '';
 msTenantIdInput.value = localStorage.getItem('msTenantId') || '';
-spFileLinkInput.value = localStorage.getItem('spFileLink') || '';
 spTableNameInput.value = localStorage.getItem('spTableName') || 'ScanLog';
 // Auto-upload defaults ON so scans send automatically without needing
 // to remember to flip the switch — respects a saved "false" if you've
 // explicitly turned it off before.
 autoUploadToggle.checked = localStorage.getItem('autoUpload') !== 'false';
 
-[msClientIdInput, msTenantIdInput, spFileLinkInput, spTableNameInput].forEach(el => {
+[msClientIdInput, msTenantIdInput, spTableNameInput].forEach(el => {
   el.addEventListener('input', () => {
     localStorage.setItem(
-      { 'ms-client-id':'msClientId', 'ms-tenant-id':'msTenantId', 'sp-file-link':'spFileLink', 'sp-table-name':'spTableName' }[el.id],
+      { 'ms-client-id':'msClientId', 'ms-tenant-id':'msTenantId', 'sp-table-name':'spTableName' }[el.id],
       el.value.trim()
     );
     // Config changed — any cached file lookup is no longer trustworthy.
@@ -351,8 +349,7 @@ function encodeShareUrl(url){
 
 async function resolveDriveItem(){
   if(driveItemCache) return driveItemCache;
-  const link = spFileLinkInput.value.trim();
-  if(!link) throw new Error('Paste the SharePoint Excel file link in settings first.');
+  const link = SP_FILE_LINK;
 
   const token = await getAccessToken();
   const shareId = encodeShareUrl(link);
@@ -372,6 +369,34 @@ async function resolveDriveItem(){
 
 // Appends one row to the named Table in the SharePoint Excel workbook via
 // Microsoft Graph's Excel API.
+// Builds one row matching the lifing sheet's 15 columns:
+// ID, Part No., Dead, Total Distance, Last Inspection, Since Inspection,
+// Next Inspection, Last Rebuild, Since Rebuild, Next Rebuild, End of
+// Life, Ch #, Outing, Date, Distance (km).
+// Only ID/Part No./Dead come from the scan itself — everything else is
+// a fresh-part default (0 for numeric tracking fields, blank for dates
+// not yet known) to be filled in or calculated later.
+function buildLifingRow(row){
+  const id = `${row.itemNumber}/${row.batchNumber}`;
+  return [
+    id,              // ID
+    row.partNumber,  // Part No.
+    false,           // Dead
+    0,               // Total Distance
+    '',              // Last Inspection
+    0,               // Since Inspection
+    '',              // Next Inspection
+    '',              // Last Rebuild
+    0,               // Since Rebuild
+    '',              // Next Rebuild
+    '',              // End of Life
+    '',              // Ch #
+    0,               // Outing
+    '',              // Date
+    0                // Distance (km)
+  ];
+}
+
 async function postRowToExcel(row){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
@@ -385,7 +410,7 @@ async function postRowToExcel(row){
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      values: [[ row.ts, row.partNumber, row.itemNumber, row.batchNumber ]]
+      values: [ buildLifingRow(row) ]
     })
   });
   const text = await res.text();
