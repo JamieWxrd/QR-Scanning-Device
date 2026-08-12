@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.0</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.1</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -145,7 +145,7 @@
     <table>
       <thead><tr>
         <th>#</th><th>Timestamp</th><th>Part Number</th><th>Item #</th>
-        <th>Batch</th><th>In-House</th><th></th>
+        <th>Batch</th><th></th>
       </tr></thead>
       <tbody id="log-body"></tbody>
     </table>
@@ -234,8 +234,7 @@ async function postToSheet(row){
     timestamp: row.ts,
     partNumber: row.partNumber,
     itemNumber: row.itemNumber,
-    batchNumber: row.batchNumber,
-    inHouse: row.inHouse
+    batchNumber: row.batchNumber
   });
 
   await fetch(url, { method: 'POST', mode: 'no-cors', body });
@@ -269,8 +268,7 @@ document.getElementById('test-connection-btn').addEventListener('click', async (
       ts: fmtTs(new Date()),
       partNumber: 'TESTPART01',
       itemNumber: '001',
-      batchNumber: 'TEST',
-      inHouse: 'No'
+      batchNumber: 'TEST'
     });
     if(result.status === 'sent_unconfirmed'){
       uploadStatus.textContent = 'Test sent (unconfirmed due to CORS) — check your sheet for a TESTPART01 row to confirm it actually landed.';
@@ -303,17 +301,13 @@ function parseCode(value){
   if(slashIdx === -1 || slashIdx < 13){
     // Doesn't match the expected format — keep the raw value visible
     // and leave the parsed fields blank rather than guessing.
-    return { partNumber: '', itemNumber: '', batchNumber: '', inHouse: '' };
+    return { partNumber: '', itemNumber: '', batchNumber: '' };
   }
   const head = value.slice(0, slashIdx);
-  const rawBatch = value.slice(slashIdx + 1);
+  const batchNumber = value.slice(slashIdx + 1);
   const partNumber = head.slice(0, 10);
   const itemNumber = head.slice(10, 13);
-  const inHouse = /^w/i.test(rawBatch) ? 'Yes' : 'No';
-  // Strip the leading "W" — it's just an in-house flag, not part of the
-  // batch number itself.
-  const batchNumber = rawBatch.replace(/^w/i, '');
-  return { partNumber, itemNumber, batchNumber, inHouse };
+  return { partNumber, itemNumber, batchNumber };
 }
 
 // Returns { ok: true } if the row was logged, or { ok: false } if the
@@ -346,7 +340,7 @@ function render(){
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${i+1}</td><td>${r.ts}</td>`
       + `<td>${escapeHtml(r.partNumber)}</td><td>${escapeHtml(r.itemNumber)}</td>`
-      + `<td>${escapeHtml(r.batchNumber)}</td><td>${escapeHtml(r.inHouse)}</td>`
+      + `<td>${escapeHtml(r.batchNumber)}</td>`
       + `<td class="del" data-i="${i}">✕</td>`;
     logBody.appendChild(tr);
   });
@@ -744,11 +738,10 @@ exportBtn.addEventListener('click', () => {
     'Timestamp': r.ts,
     'Part Number': r.partNumber,
     'Item #': r.itemNumber,
-    'Batch': r.batchNumber,
-    'In-House': r.inHouse
+    'Batch': r.batchNumber
   }));
   const ws = XLSX.utils.json_to_sheet(data);
-  ws['!cols'] = [{wch:5},{wch:20},{wch:15},{wch:8},{wch:15},{wch:10}];
+  ws['!cols'] = [{wch:5},{wch:20},{wch:15},{wch:8},{wch:15}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Scans');
   const fname = `qr-scans-${fmtTs(new Date()).replace(/[: ]/g,'-')}.xlsx`;
