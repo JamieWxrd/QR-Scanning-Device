@@ -194,6 +194,17 @@ manualInput.addEventListener('keydown', e => {
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
+// Prefer the browser's native BarcodeDetector API where available —
+// on Android Chrome this is backed by the same on-device Google
+// barcode engine the phone's built-in camera app uses, which is far
+// more robust than the plain-JS jsQR fallback (better with glare,
+// low contrast, and etched/engraved surfaces).
+let barcodeDetector = null;
+if('BarcodeDetector' in window){
+  try{ barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] }); }
+  catch(e){ barcodeDetector = null; }
+}
+
 async function startCamera(){
   try{
     stream = await navigator.mediaDevices.getUserMedia({
@@ -218,7 +229,8 @@ async function startCamera(){
     }
 
     scanning = true;
-    camStatus.textContent = 'Camera on — hold the code ~15–25cm away, steady, in good light.';
+    const engine = barcodeDetector ? 'native scanner' : 'fallback scanner';
+    camStatus.textContent = `Camera on (${engine}) — hold the code ~15–25cm away, steady, in good light.`;
     camToggle.textContent = 'Stop Camera';
     requestAnimationFrame(tick);
   } catch(err){
@@ -277,46 +289,67 @@ function boostContrast(imageData){
   return imageData;
 }
 
-function tick(){
+let tickBusy = false;
+
+async function tick(){
   if(!scanning) return;
-  if(video.readyState === video.HAVE_ENOUGH_DATA){
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  if(video.readyState === video.HAVE_ENOUGH_DATA && !tickBusy){
+    tickBusy = true;
+    try{
+      let value = null;
 
-    // Crop to the center scan box (matches the on-screen guide) and
-    // upscale it — this gives jsQR more effective resolution on small
-    // codes and cuts out noisy background (e.g. brushed metal texture).
-    const sx = canvas.width * 0.15, sy = canvas.height * 0.15;
-    const sw = canvas.width * 0.70, sh = canvas.height * 0.70;
-    const cropCanvas = document.createElement('canvas');
-    const scale = 2;
-    cropCanvas.width = sw * scale;
-    cropCanvas.height = sh * scale;
-    const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
-    cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, cropCanvas.width, cropCanvas.height);
+      if(barcodeDetector){
+        // Native OS-level decoder — same engine your phone's camera app uses.
+        try{
+          const results = await barcodeDetector.detect(video);
+          if(results && results.length) value = results[0].rawValue;
+        } catch(e){ /* fall through to jsQR below */ }
+      }
 
-    let imageData = cropCtx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-    imageData = boostContrast(imageData);
+      if(!value){
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    let code = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: 'attemptBoth'
-    });
+        // Crop to the center scan box (matches the on-screen guide) and
+        // upscale it — this gives jsQR more effective resolution on small
+        // codes and cuts out noisy background (e.g. brushed metal texture).
+        const sx = canvas.width * 0.15, sy = canvas.height * 0.15;
+        const sw = canvas.width * 0.70, sh = canvas.height * 0.70;
+        const cropCanvas = document.createElement('canvas');
+        const scale = 2;
+        cropCanvas.width = sw * scale;
+        cropCanvas.height = sh * scale;
+        const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
+        cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, cropCanvas.width, cropCanvas.height);
 
-    // Fallback: try the full uncropped frame in case the code isn't
-    // inside the guide box.
-    if(!code){
-      const fullData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      code = jsQR(fullData.data, fullData.width, fullData.height, {
-        inversionAttempts: 'attemptBoth'
-      });
-    }
+        let imageData = cropCtx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+        imageData = boostContrast(imageData);
 
-    if(code && code.data){
-      camStatus.textContent = 'Scanned: ' + code.data;
-      camStatus.classList.add('good');
-      addRow(code.data);
-      setTimeout(() => camStatus.classList.remove('good'), 500);
+        let code = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'attemptBoth'
+        });
+
+        // Fallback: try the full uncropped frame in case the code isn't
+        // inside the guide box.
+        if(!code){
+          const fullData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          code = jsQR(fullData.data, fullData.width, fullData.height, {
+            inversionAttempts: 'attemptBoth'
+          });
+        }
+
+        if(code && code.data) value = code.data;
+      }
+
+      if(value){
+        camStatus.textContent = 'Scanned: ' + value;
+        camStatus.classList.add('good');
+        addRow(value);
+        setTimeout(() => camStatus.classList.remove('good'), 500);
+      }
+    } finally {
+      tickBusy = false;
     }
   }
   requestAnimationFrame(tick);
