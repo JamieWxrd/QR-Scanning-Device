@@ -77,7 +77,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.1</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.3</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -116,8 +116,12 @@
   <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically — just tap into this box first so it works the same way here as it will on a dedicated scanning device.</p>
 </div>
 
-<div class="card" id="settings-panel" style="display:none;">
-  <h2><span>Cloud Upload</span></h2>
+<div id="settings-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99;"></div>
+<div class="card" id="settings-panel" style="display:none; position:fixed; top:12px; left:16px; right:16px; z-index:100; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+  <h2>
+    <span>Cloud Upload</span>
+    <button id="settings-close" aria-label="Close" style="background:none; border:none; color:var(--muted); font-size:20px; padding:0; line-height:1; cursor:pointer;">✕</button>
+  </h2>
   <label for="sheet-url">Google Apps Script Web App URL</label>
   <input type="text" id="sheet-url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
   <div class="row" style="align-items:center; margin-top:10px;">
@@ -175,9 +179,22 @@ const uploadStatus = document.getElementById('upload-status');
 const settingsToggle = document.getElementById('settings-toggle');
 const settingsPanel = document.getElementById('settings-panel');
 
+const settingsBackdrop = document.getElementById('settings-backdrop');
+const settingsClose = document.getElementById('settings-close');
+
+function openSettings(){
+  settingsPanel.style.display = 'block';
+  settingsBackdrop.style.display = 'block';
+}
+function closeSettings(){
+  settingsPanel.style.display = 'none';
+  settingsBackdrop.style.display = 'none';
+}
 settingsToggle.addEventListener('click', () => {
-  settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
+  settingsPanel.style.display === 'none' ? openSettings() : closeSettings();
 });
+settingsClose.addEventListener('click', closeSettings);
+settingsBackdrop.addEventListener('click', closeSettings);
 
 // Default Google Apps Script Web App URL — pre-filled so it doesn't
 // need to be typed in on every device. Still editable/overridable below.
@@ -338,13 +355,32 @@ async function populateCameraList(){
   if(camerasListed) return;
   try{
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoInputs = devices.filter(d => d.kind === 'videoinput');
-    if(videoInputs.length > 1){
+    let videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+    // Drop the front-facing camera — this app only ever needs rear lenses.
+    const rearInputs = videoInputs.filter(d => !/front/i.test(d.label));
+    if(rearInputs.length) videoInputs = rearInputs;
+
+    // Keep it to two options: a "far" (standard) lens and a "close"
+    // (macro/ultra-wide) lens, since that's all this app needs. Prefer
+    // whichever rear lens is explicitly labelled macro/ultra-wide for
+    // "close" — otherwise just fall back to the second rear camera listed.
+    let farCam = videoInputs[0];
+    let closeCam = videoInputs.find((d, i) => i > 0 && /macro|ultra.?wide/i.test(d.label))
+      || videoInputs[1];
+
+    const picks = [];
+    if(farCam) picks.push({ device: farCam, label: 'Far (standard lens)' });
+    if(closeCam && closeCam.deviceId !== farCam?.deviceId){
+      picks.push({ device: closeCam, label: 'Close (macro/wide lens)' });
+    }
+
+    if(picks.length > 1){
       cameraSelect.innerHTML = '';
-      videoInputs.forEach((d, i) => {
+      picks.forEach(p => {
         const opt = document.createElement('option');
-        opt.value = d.deviceId;
-        opt.textContent = d.label || `Camera ${i+1}`;
+        opt.value = p.device.deviceId;
+        opt.textContent = p.label;
         cameraSelect.appendChild(opt);
       });
       cameraWrap.style.display = 'block';
