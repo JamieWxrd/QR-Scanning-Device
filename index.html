@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.7</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.8</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -115,6 +115,15 @@
   <label for="manual-input">Manual entry / hardware scanner input</label>
   <input type="text" id="manual-input" placeholder="Scan or type code, then press Enter" autocomplete="off" autofocus>
   <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically. This box stays focused automatically so a Zebra/hardware scanner can feed it directly — no need to tap in first.</p>
+</div>
+
+<div id="chassis-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:199;"></div>
+<div class="card" id="chassis-modal" style="display:none; position:fixed; top:30%; left:16px; right:16px; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+  <h2><span>Add a Chassis Number</span></h2>
+  <input type="text" id="chassis-input" placeholder="Leave blank if no chassis" autocomplete="off">
+  <div class="row" style="margin-top:12px;">
+    <button class="btn-primary" id="chassis-continue-btn">Continue</button>
+  </div>
 </div>
 
 <div id="settings-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99;"></div>
@@ -168,6 +177,39 @@ const logBody = document.getElementById('log-body');
 const emptyMsg = document.getElementById('empty-msg');
 const countPill = document.getElementById('count-pill');
 const manualInput = document.getElementById('manual-input');
+const chassisBackdrop = document.getElementById('chassis-backdrop');
+const chassisModal = document.getElementById('chassis-modal');
+const chassisInput = document.getElementById('chassis-input');
+const chassisContinueBtn = document.getElementById('chassis-continue-btn');
+
+// Shows the chassis-number popup after a valid scan and resolves with
+// whatever was typed (empty string if left blank, per "leave blank if
+// no chassis"). Used to gate finishing the scan until the user responds.
+function promptChassisNumber(){
+  return new Promise(resolve => {
+    chassisInput.value = '';
+    chassisModal.style.display = 'block';
+    chassisBackdrop.style.display = 'block';
+    setTimeout(() => chassisInput.focus(), 50);
+
+    function finish(){
+      const val = chassisInput.value.trim();
+      chassisModal.style.display = 'none';
+      chassisBackdrop.style.display = 'none';
+      chassisContinueBtn.removeEventListener('click', finish);
+      chassisInput.removeEventListener('keydown', onKeydown);
+      // Hand focus back to the scanner input so hardware scanning can
+      // continue without an extra tap.
+      setTimeout(() => manualInput.focus(), 50);
+      resolve(val);
+    }
+    function onKeydown(e){
+      if(e.key === 'Enter') finish();
+    }
+    chassisContinueBtn.addEventListener('click', finish);
+    chassisInput.addEventListener('keydown', onKeydown);
+  });
+}
 const camStatus = document.getElementById('cam-status');
 const camToggle = document.getElementById('cam-toggle');
 const video = document.getElementById('video');
@@ -379,27 +421,29 @@ async function resolveDriveItem(){
 // ID, Part No., Dead, Total Distance, Last Inspection, Since Inspection,
 // Next Inspection, Last Rebuild, Since Rebuild, Next Rebuild, End of
 // Life, Ch #, Outing, Date, Distance (km).
-// Only ID/Part No./Dead come from the scan itself — everything else is
-// a fresh-part default (0 for numeric tracking fields, blank for dates
-// not yet known) to be filled in or calculated later.
+// ID/Part No./Dead come from the scan itself, Ch # comes from the
+// post-scan chassis-number prompt (blank if the user left it blank) —
+// everything else is a fresh-part default (0 for numeric tracking
+// fields, blank for dates not yet known) to be filled in or calculated
+// later.
 function buildLifingRow(row){
   const id = `${row.itemNumber}/${row.batchNumber}`;
   return [
-    id,              // ID
-    row.partNumber,  // Part No.
-    false,           // Dead
-    0,               // Total Distance
-    0,               // Last Inspection (distance-based, not a date)
-    0,               // Since Inspection
-    0,               // Next Inspection (distance-based, not a date)
-    0,               // Last Rebuild (distance-based, not a date)
-    0,               // Since Rebuild
-    0,               // Next Rebuild (distance-based, not a date)
-    0,               // End of Life (distance-based, not a date)
-    '',              // Ch #
-    0,               // Outing
-    '',              // Date (the actual date field)
-    0                // Distance (km)
+    id,                       // ID
+    row.partNumber,           // Part No.
+    false,                    // Dead
+    0,                        // Total Distance
+    0,                        // Last Inspection (distance-based, not a date)
+    0,                        // Since Inspection
+    0,                        // Next Inspection (distance-based, not a date)
+    0,                        // Last Rebuild (distance-based, not a date)
+    0,                        // Since Rebuild
+    0,                        // Next Rebuild (distance-based, not a date)
+    0,                        // End of Life (distance-based, not a date)
+    row.chassisNumber || '',  // Ch #
+    0,                        // Outing
+    '',                       // Date (the actual date field)
+    0                         // Distance (km)
   ];
 }
 
@@ -490,7 +534,7 @@ function parseCode(value){
 
 // Returns { ok: true } if the row was logged, or { ok: false } if the
 // scanned value didn't match the expected code format and was rejected.
-function addRow(value){
+async function addRow(value){
   if(!value) return { ok: false, reason: 'Empty scan.' };
   // debounce duplicate scans within 2s (camera reads the same code repeatedly)
   const now = Date.now();
@@ -503,8 +547,10 @@ function addRow(value){
     return { ok: false, reason: 'Not a recognized code format.' };
   }
 
+  const chassisNumber = await promptChassisNumber();
+
   const ts = fmtTs(new Date());
-  const row = { ts, value, ...parsed };
+  const row = { ts, value, ...parsed, chassisNumber };
   rows.push(row);
   render();
   if(navigator.vibrate) navigator.vibrate(60);
@@ -547,11 +593,11 @@ clearBtn.addEventListener('click', () => {
 });
 
 // --- manual / hardware scanner input (acts as keyboard, sends Enter) ---
-function submitManualValue(){
+async function submitManualValue(){
   const val = manualInput.value.trim();
   manualInput.value = '';
   if(!val) return;
-  const result = addRow(val);
+  const result = await addRow(val);
   if(!result.ok && result.reason !== 'duplicate'){
     camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
     camStatus.classList.add('bad-flash');
@@ -851,7 +897,7 @@ captureBtn.addEventListener('click', async () => {
     }
 
     if(value){
-      const result = addRow(value);
+      const result = await addRow(value);
       if(result.ok){
         camStatus.textContent = 'Scanned: ' + value;
         camStatus.classList.add('good');
@@ -943,7 +989,7 @@ async function tick(){
       }
 
       if(value){
-        const result = addRow(value);
+        const result = await addRow(value);
         if(result.ok){
           camStatus.textContent = 'Scanned: ' + value;
           camStatus.classList.add('good');
