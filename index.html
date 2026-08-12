@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.5</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.7</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -262,8 +262,11 @@ function updateSignInStatus(){
     const account = msalInstance && msalInstance.getActiveAccount();
     msSigninStatus.textContent = account ? ('Signed in as ' + (account.username || account.name)) : 'Not signed in.';
     msSigninStatus.style.color = account ? 'var(--good)' : '';
+    // Once signed in, there's nothing left for the button to do.
+    msSigninBtn.style.display = account ? 'none' : '';
   } catch(e){
     msSigninStatus.textContent = 'Not signed in.';
+    msSigninBtn.style.display = '';
   }
 }
 
@@ -386,16 +389,16 @@ function buildLifingRow(row){
     row.partNumber,  // Part No.
     false,           // Dead
     0,               // Total Distance
-    '',              // Last Inspection
+    0,               // Last Inspection (distance-based, not a date)
     0,               // Since Inspection
-    '',              // Next Inspection
-    '',              // Last Rebuild
+    0,               // Next Inspection (distance-based, not a date)
+    0,               // Last Rebuild (distance-based, not a date)
     0,               // Since Rebuild
-    '',              // Next Rebuild
-    '',              // End of Life
+    0,               // Next Rebuild (distance-based, not a date)
+    0,               // End of Life (distance-based, not a date)
     '',              // Ch #
     0,               // Outing
-    '',              // Date
+    '',              // Date (the actual date field)
     0                // Distance (km)
   ];
 }
