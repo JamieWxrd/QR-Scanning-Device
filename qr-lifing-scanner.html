@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QR Lifing Scanner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
+    --text:#e8eaed; --muted:#8b93a1; --accent:#4f8cff; --accent2:#3a6fd8;
+    --good:#3ecf8e; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:16px; padding-bottom:90px;
+  }
+  h1{font-size:18px; margin:0 0 4px;}
+  p.sub{color:var(--muted); font-size:13px; margin:0 0 16px;}
+  .card{
+    background:var(--panel); border:1px solid var(--border); border-radius:14px;
+    padding:14px; margin-bottom:14px;
+  }
+  #video-wrap{
+    position:relative; width:100%; aspect-ratio:1/1; max-height:340px;
+    background:#000; border-radius:12px; overflow:hidden; margin-bottom:10px;
+  }
+  video{width:100%; height:100%; object-fit:cover;}
+  #scan-box{
+    position:absolute; inset:15%; border:2px solid var(--accent);
+    border-radius:12px; box-shadow:0 0 0 999px rgba(0,0,0,0.35);
+    pointer-events:none;
+  }
+  .status{
+    font-size:13px; color:var(--muted); text-align:center; min-height:18px;
+  }
+  .status.good{color:var(--good);}
+  button{
+    font-size:15px; font-weight:600; border:none; border-radius:10px;
+    padding:12px 16px; cursor:pointer; color:#fff;
+  }
+  .btn-primary{background:var(--accent); width:100%;}
+  .btn-primary:active{background:var(--accent2);}
+  .btn-secondary{background:var(--panel2); border:1px solid var(--border); color:var(--text);}
+  .row{display:flex; gap:8px; margin-top:8px;}
+  .row button{flex:1;}
+  label{font-size:12px; color:var(--muted); display:block; margin-bottom:6px;}
+  input[type=text]{
+    width:100%; padding:12px; border-radius:10px; border:1px solid var(--border);
+    background:var(--panel2); color:var(--text); font-size:15px;
+  }
+  input[type=text]:focus{outline:2px solid var(--accent);}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th,td{
+    text-align:left; padding:8px 6px; border-bottom:1px solid var(--border);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:140px;
+  }
+  th{color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel);}
+  #table-wrap{max-height:260px; overflow:auto; border:1px solid var(--border); border-radius:10px;}
+  .empty{color:var(--muted); font-size:13px; text-align:center; padding:20px 0;}
+  .del{color:var(--bad); cursor:pointer; font-weight:700;}
+  .footer-bar{
+    position:fixed; bottom:0; left:0; right:0; padding:12px 16px;
+    background:linear-gradient(to top, var(--bg) 70%, transparent);
+  }
+  .count-pill{
+    display:inline-block; background:var(--panel2); border:1px solid var(--border);
+    padding:3px 10px; border-radius:999px; font-size:12px; color:var(--muted);
+  }
+  h2{font-size:14px; margin:0 0 10px; display:flex; justify-content:space-between; align-items:center;}
+</style>
+</head>
+<body>
+
+<h1>QR Lifing Scanner</h1>
+<p class="sub">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
+
+<div class="card">
+  <div id="video-wrap">
+    <video id="video" playsinline autoplay muted></video>
+    <div id="scan-box"></div>
+  </div>
+  <div class="status" id="cam-status">Tap "Start Camera" to begin scanning.</div>
+  <div class="row">
+    <button class="btn-primary" id="cam-toggle">Start Camera</button>
+  </div>
+</div>
+
+<div class="card">
+  <label for="manual-input">Manual entry / hardware scanner input</label>
+  <input type="text" id="manual-input" placeholder="Scan or type code, then press Enter" autocomplete="off">
+  <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically — just tap into this box first so it works the same way here as it will on a dedicated scanning device.</p>
+</div>
+
+<div class="card">
+  <h2>
+    <span>Scanned Log</span>
+    <span class="count-pill" id="count-pill">0 rows</span>
+  </h2>
+  <div id="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>Timestamp</th><th>Value</th><th></th></tr></thead>
+      <tbody id="log-body"></tbody>
+    </table>
+  </div>
+  <div class="empty" id="empty-msg">No scans yet.</div>
+</div>
+
+<div class="footer-bar">
+  <div class="row">
+    <button class="btn-secondary" id="clear-btn">Clear</button>
+    <button class="btn-primary" id="export-btn">Export to Excel</button>
+  </div>
+</div>
+
+<script>
+const logBody = document.getElementById('log-body');
+const emptyMsg = document.getElementById('empty-msg');
+const countPill = document.getElementById('count-pill');
+const manualInput = document.getElementById('manual-input');
+const camStatus = document.getElementById('cam-status');
+const camToggle = document.getElementById('cam-toggle');
+const video = document.getElementById('video');
+const exportBtn = document.getElementById('export-btn');
+const clearBtn = document.getElementById('clear-btn');
+
+let rows = [];       // {ts, value}
+let stream = null;
+let scanning = false;
+let lastValue = '';
+let lastTime = 0;
+
+function fmtTs(d){
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function addRow(value){
+  if(!value) return;
+  // debounce duplicate scans within 2s (camera reads the same code repeatedly)
+  const now = Date.now();
+  if(value === lastValue && (now - lastTime) < 2000) return;
+  lastValue = value; lastTime = now;
+
+  const ts = fmtTs(new Date());
+  rows.push({ts, value});
+  render();
+  if(navigator.vibrate) navigator.vibrate(60);
+}
+
+function render(){
+  logBody.innerHTML = '';
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i+1}</td><td>${r.ts}</td><td>${escapeHtml(r.value)}</td><td class="del" data-i="${i}">✕</td>`;
+    logBody.appendChild(tr);
+  });
+  emptyMsg.style.display = rows.length ? 'none' : 'block';
+  countPill.textContent = `${rows.length} row${rows.length===1?'':'s'}`;
+  document.getElementById('table-wrap').scrollTop = document.getElementById('table-wrap').scrollHeight;
+}
+
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+logBody.addEventListener('click', e => {
+  if(e.target.classList.contains('del')){
+    rows.splice(Number(e.target.dataset.i), 1);
+    render();
+  }
+});
+
+clearBtn.addEventListener('click', () => {
+  if(rows.length && !confirm('Clear all scanned rows?')) return;
+  rows = [];
+  render();
+});
+
+// --- manual / hardware scanner input (acts as keyboard, sends Enter) ---
+manualInput.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){
+    addRow(manualInput.value.trim());
+    manualInput.value = '';
+  }
+});
+
+// --- camera scanning ---
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+async function startCamera(){
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' }
+    });
+    video.srcObject = stream;
+    await video.play();
+    scanning = true;
+    camStatus.textContent = 'Camera on — point at a QR code.';
+    camToggle.textContent = 'Stop Camera';
+    requestAnimationFrame(tick);
+  } catch(err){
+    camStatus.textContent = 'Camera access failed: ' + err.message;
+  }
+}
+
+function stopCamera(){
+  scanning = false;
+  if(stream){
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  camStatus.textContent = 'Camera stopped.';
+  camToggle.textContent = 'Start Camera';
+}
+
+camToggle.addEventListener('click', () => {
+  scanning ? stopCamera() : startCamera();
+});
+
+function tick(){
+  if(!scanning) return;
+  if(video.readyState === video.HAVE_ENOUGH_DATA){
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'dontInvert'
+    });
+    if(code && code.data){
+      camStatus.textContent = 'Scanned: ' + code.data;
+      camStatus.classList.add('good');
+      addRow(code.data);
+      setTimeout(() => camStatus.classList.remove('good'), 500);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+// --- export to Excel (.xlsx) ---
+exportBtn.addEventListener('click', () => {
+  if(!rows.length){
+    alert('No scans to export yet.');
+    return;
+  }
+  const data = rows.map((r, i) => ({ '#': i+1, 'Timestamp': r.ts, 'Scanned Value': r.value }));
+  const ws = XLSX.utils.json_to_sheet(data);
+  ws['!cols'] = [{wch:5},{wch:20},{wch:40}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Scans');
+  const fname = `qr-scans-${fmtTs(new Date()).replace(/[: ]/g,'-')}.xlsx`;
+  XLSX.writeFile(wb, fname);
+});
+</script>
+</body>
+</html>
