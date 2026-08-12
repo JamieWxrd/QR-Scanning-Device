@@ -197,18 +197,52 @@ const ctx = canvas.getContext('2d', { willReadFrequently: true });
 async function startCamera(){
   try{
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' }
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
     });
     video.srcObject = stream;
     await video.play();
+
+    // Try to force continuous autofocus so close-up QR codes stay sharp.
+    // Not all browsers support this — fails silently if unsupported.
+    const track = stream.getVideoTracks()[0];
+    if(track && track.getCapabilities){
+      const caps = track.getCapabilities();
+      if(caps.focusMode && caps.focusMode.includes('continuous')){
+        try{ await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); }
+        catch(e){ /* ignore unsupported */ }
+      }
+    }
+
     scanning = true;
-    camStatus.textContent = 'Camera on — point at a QR code.';
+    camStatus.textContent = 'Camera on — hold the code ~15–25cm away, steady, in good light.';
     camToggle.textContent = 'Stop Camera';
     requestAnimationFrame(tick);
   } catch(err){
     camStatus.textContent = 'Camera access failed: ' + err.message;
   }
 }
+
+// Tap the video to force a refocus (helps on phones that don't
+// re-focus automatically once locked on a blurry frame).
+video.addEventListener('click', async () => {
+  if(!stream) return;
+  const track = stream.getVideoTracks()[0];
+  if(!track || !track.getCapabilities) return;
+  const caps = track.getCapabilities();
+  try{
+    if(caps.focusMode && caps.focusMode.includes('single-shot')){
+      await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] });
+    } else if(caps.focusMode && caps.focusMode.includes('continuous')){
+      // toggling off/on nudges some devices into refocusing
+      await track.applyConstraints({ advanced: [{ focusMode: 'manual' }] });
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    }
+  } catch(e){ /* ignore unsupported */ }
+});
 
 function stopCamera(){
   scanning = false;
