@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.6</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.8</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -129,6 +129,9 @@
     <label style="display:flex; align-items:center; gap:8px; margin:0; font-size:14px; color:var(--text);">
       <input type="checkbox" id="auto-upload-toggle" style="width:auto;"> Auto-upload each scan
     </label>
+  </div>
+  <div class="row">
+    <button class="btn-secondary" id="test-connection-btn">Test Connection</button>
   </div>
   <div class="status" id="upload-status" style="margin-top:8px;"></div>
 </div>
@@ -213,28 +216,49 @@ autoUploadToggle.addEventListener('change', () => {
 
 // Posts one parsed row to the Google Apps Script web app. Sent without
 // a JSON content-type header (as text/plain) so the browser skips the
-// CORS preflight, which Apps Script doesn't handle — this is the
-// standard workaround for talking to Apps Script from a web page.
-async function uploadRow(row){
+// CORS preflight, which Apps Script doesn't handle. Uses normal 'cors'
+// mode (not 'no-cors') so we can actually read back whether it worked —
+// 'no-cors' always looks successful even when the write silently fails.
+async function postToSheet(row){
   const url = sheetUrlInput.value.trim();
-  if(!autoUploadToggle.checked || !url) return;
+  if(!url) throw new Error('No Web App URL set.');
+
+  const res = await fetch(url, {
+    method: 'POST',
+    body: JSON.stringify({
+      timestamp: row.ts,
+      partNumber: row.partNumber,
+      itemNumber: row.itemNumber,
+      batchNumber: row.batchNumber,
+      inHouse: row.inHouse
+    })
+  });
+
+  const text = await res.text();
+  let parsed;
+  try{ parsed = JSON.parse(text); } catch(e){ parsed = null; }
+
+  if(!res.ok){
+    throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
+  }
+  if(parsed && parsed.status && parsed.status !== 'ok'){
+    throw new Error('Script reported: ' + text.slice(0, 200));
+  }
+  if(!parsed){
+    // Got a 200 but not the JSON we expect — usually means the URL
+    // redirected to a Google sign-in page rather than running the
+    // script (deployment access isn't set to "Anyone").
+    throw new Error('Unexpected response — deployment may not be public. Response started: ' + text.slice(0, 150));
+  }
+  return parsed;
+}
+
+async function uploadRow(row){
+  if(!autoUploadToggle.checked) return;
   uploadStatus.textContent = 'Uploading...';
   uploadStatus.style.color = '';
   try{
-    // no-cors: we don't need to read the response, and Apps Script's
-    // redirect-based response doesn't reliably expose CORS headers —
-    // this still fires the write server-side.
-    await fetch(url, {
-      method: 'POST',
-      mode: 'no-cors',
-      body: JSON.stringify({
-        timestamp: row.ts,
-        partNumber: row.partNumber,
-        itemNumber: row.itemNumber,
-        batchNumber: row.batchNumber,
-        inHouse: row.inHouse
-      })
-    });
+    await postToSheet(row);
     uploadStatus.textContent = 'Uploaded to sheet.';
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
@@ -242,6 +266,25 @@ async function uploadRow(row){
     uploadStatus.style.color = 'var(--bad)';
   }
 }
+
+document.getElementById('test-connection-btn').addEventListener('click', async () => {
+  uploadStatus.textContent = 'Testing...';
+  uploadStatus.style.color = '';
+  try{
+    await postToSheet({
+      ts: fmtTs(new Date()),
+      partNumber: 'TESTPART01',
+      itemNumber: '001',
+      batchNumber: 'TEST',
+      inHouse: 'No'
+    });
+    uploadStatus.textContent = 'Test row sent successfully — check your sheet for a TESTPART01 row.';
+    uploadStatus.style.color = 'var(--good)';
+  } catch(err){
+    uploadStatus.textContent = 'Test failed: ' + err.message;
+    uploadStatus.style.color = 'var(--bad)';
+  }
+});
 
 let rows = [];       // {ts, value}
 let stream = null;
@@ -362,6 +405,25 @@ let barcodeDetector = null;
 if('BarcodeDetector' in window){
   try{ barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] }); }
   catch(e){ barcodeDetector = null; }
+}
+
+// When multiple QR codes are visible at once, prefer whichever one is
+// closest to the center of the frame — doesn't need to be pixel-perfect,
+// just a reasonable "most likely the one you're aiming at" heuristic.
+function pickMostCentral(results, frameWidth, frameHeight){
+  if(!results || !results.length) return null;
+  if(results.length === 1) return results[0];
+  const cx = frameWidth / 2, cy = frameHeight / 2;
+  let best = results[0], bestDist = Infinity;
+  for(const r of results){
+    const box = r.boundingBox;
+    if(!box) continue;
+    const rx = box.x + box.width / 2;
+    const ry = box.y + box.height / 2;
+    const dist = Math.hypot(rx - cx, ry - cy);
+    if(dist < bestDist){ bestDist = dist; best = r; }
+  }
+  return best;
 }
 
 let camerasListed = false;
@@ -548,7 +610,8 @@ captureBtn.addEventListener('click', async () => {
     if(barcodeDetector){
       try{
         const results = await barcodeDetector.detect(shotCanvas);
-        if(results && results.length) value = results[0].rawValue;
+        const best = pickMostCentral(results, shotCanvas.width, shotCanvas.height);
+        if(best) value = best.rawValue;
       } catch(e){ /* fall through */ }
     }
 
@@ -612,7 +675,8 @@ async function tick(){
         // Native OS-level decoder — same engine your phone's camera app uses.
         try{
           const results = await barcodeDetector.detect(video);
-          if(results && results.length) value = results[0].rawValue;
+          const best = pickMostCentral(results, video.videoWidth, video.videoHeight);
+          if(best) value = best.rawValue;
         } catch(e){ /* fall through to jsQR below */ }
       }
 
