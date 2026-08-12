@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.1</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.3</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -113,8 +113,8 @@
 
 <div class="card">
   <label for="manual-input">Manual entry / hardware scanner input</label>
-  <input type="text" id="manual-input" placeholder="Scan or type code, then press Enter" autocomplete="off">
-  <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically — just tap into this box first so it works the same way here as it will on a dedicated scanning device.</p>
+  <input type="text" id="manual-input" placeholder="Scan or type code, then press Enter" autocomplete="off" autofocus>
+  <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically. This box stays focused automatically so a Zebra/hardware scanner can feed it directly — no need to tap in first.</p>
 </div>
 
 <div id="settings-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99;"></div>
@@ -206,7 +206,10 @@ const DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwOoD7leJqKB6
 
 // Restore saved cloud-upload settings.
 sheetUrlInput.value = localStorage.getItem('sheetUrl') || DEFAULT_SHEET_URL;
-autoUploadToggle.checked = localStorage.getItem('autoUpload') === 'true';
+// Auto-upload defaults ON so scans send automatically without needing
+// to remember to flip the switch — respects a saved "false" if you've
+// explicitly turned it off before.
+autoUploadToggle.checked = localStorage.getItem('autoUpload') !== 'false';
 sheetUrlInput.addEventListener('input', () => {
   localStorage.setItem('sheetUrl', sheetUrlInput.value.trim());
 });
@@ -382,6 +385,24 @@ manualInput.addEventListener('keydown', e => {
     }
     manualInput.value = '';
   }
+});
+
+// Keep the manual/hardware-scanner input focused so a Zebra device's
+// scan trigger can feed it directly without tapping in first — refocus
+// automatically whenever focus drifts away to somewhere non-interactive
+// (e.g. tapping empty space), but don't steal focus from other inputs,
+// buttons, or the settings panel while you're actively using them.
+manualInput.focus();
+document.addEventListener('click', (e) => {
+  const tag = e.target.tagName;
+  const isInteractive = ['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A', 'VIDEO'].includes(tag)
+    || e.target.closest('button, a, .del');
+  if(!isInteractive){
+    setTimeout(() => manualInput.focus(), 50);
+  }
+});
+window.addEventListener('focus', () => {
+  setTimeout(() => manualInput.focus(), 50);
 });
 
 // --- camera scanning ---
