@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>QR Lifing Scanner</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
@@ -78,7 +77,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.4</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.5</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -156,7 +155,6 @@
 <div class="footer-bar">
   <div class="row">
     <button class="btn-secondary" id="clear-btn">Clear</button>
-    <button class="btn-primary" id="export-btn">Export to Excel</button>
   </div>
 </div>
 
@@ -168,7 +166,6 @@ const manualInput = document.getElementById('manual-input');
 const camStatus = document.getElementById('cam-status');
 const camToggle = document.getElementById('cam-toggle');
 const video = document.getElementById('video');
-const exportBtn = document.getElementById('export-btn');
 const clearBtn = document.getElementById('clear-btn');
 const captureBtn = document.getElementById('capture-btn');
 const zoomWrap = document.getElementById('zoom-wrap');
@@ -786,26 +783,6 @@ async function tick(){
   requestAnimationFrame(tick);
 }
 
-// --- export to Excel (.xlsx) ---
-exportBtn.addEventListener('click', () => {
-  if(!rows.length){
-    alert('No scans to export yet.');
-    return;
-  }
-  const data = rows.map((r, i) => ({
-    '#': i+1,
-    'Timestamp': r.ts,
-    'Part Number': r.partNumber,
-    'Item #': r.itemNumber,
-    'Batch': r.batchNumber
-  }));
-  const ws = XLSX.utils.json_to_sheet(data);
-  ws['!cols'] = [{wch:5},{wch:20},{wch:15},{wch:8},{wch:15}];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Scans');
-  const fname = `qr-scans-${fmtTs(new Date()).replace(/[: ]/g,'-')}.xlsx`;
-  XLSX.writeFile(wb, fname);
-});
 </script>
 </body>
 </html>
