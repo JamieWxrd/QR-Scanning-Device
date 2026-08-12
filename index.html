@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.8</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.9</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -118,11 +118,20 @@
 </div>
 
 <div id="chassis-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:199;"></div>
+<div id="duplicate-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:199;"></div>
 <div class="card" id="chassis-modal" style="display:none; position:fixed; top:30%; left:16px; right:16px; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
   <h2><span>Add a Chassis Number</span></h2>
   <input type="text" id="chassis-input" placeholder="Leave blank if no chassis" autocomplete="off">
   <div class="row" style="margin-top:12px;">
     <button class="btn-primary" id="chassis-continue-btn">Continue</button>
+  </div>
+</div>
+
+<div class="card" id="duplicate-modal" style="display:none; position:fixed; top:30%; left:16px; right:16px; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+  <h2><span>Already Scanned</span></h2>
+  <p class="sub" id="duplicate-message" style="margin:0;">This item is already in the database. It has not been added again.</p>
+  <div class="row" style="margin-top:12px;">
+    <button class="btn-primary" id="duplicate-ok-btn">OK</button>
   </div>
 </div>
 
@@ -210,6 +219,29 @@ function promptChassisNumber(){
     chassisInput.addEventListener('keydown', onKeydown);
   });
 }
+
+const duplicateBackdrop = document.getElementById('duplicate-backdrop');
+const duplicateModal = document.getElementById('duplicate-modal');
+const duplicateMessage = document.getElementById('duplicate-message');
+const duplicateOkBtn = document.getElementById('duplicate-ok-btn');
+
+function showDuplicateAlert(id){
+  return new Promise(resolve => {
+    duplicateMessage.textContent = `Item ${id} is already in the database. It has not been added again.`;
+    duplicateModal.style.display = 'block';
+    duplicateBackdrop.style.display = 'block';
+
+    function finish(){
+      duplicateModal.style.display = 'none';
+      duplicateBackdrop.style.display = 'none';
+      duplicateOkBtn.removeEventListener('click', finish);
+      setTimeout(() => manualInput.focus(), 50);
+      resolve();
+    }
+    duplicateOkBtn.addEventListener('click', finish);
+  });
+}
+
 const camStatus = document.getElementById('cam-status');
 const camToggle = document.getElementById('cam-toggle');
 const video = document.getElementById('video');
@@ -415,6 +447,23 @@ async function resolveDriveItem(){
   return driveItemCache;
 }
 
+// Reads the current values of the ID column from the SharePoint table,
+// so a newly scanned item can be checked against everything already
+// recorded there — not just what's been scanned this session.
+async function fetchExistingIds(){
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/ID/range`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  const text = await res.text();
+  if(!res.ok){
+    throw new Error(`Graph error checking for duplicates (HTTP ${res.status}): ` + text.slice(0, 200));
+  }
+  const data = JSON.parse(text);
+  const values = (data.values || []).flat().map(v => String(v).trim()).filter(Boolean);
+  return new Set(values);
+}
+
 // Appends one row to the named Table in the SharePoint Excel workbook via
 // Microsoft Graph's Excel API.
 // Builds one row matching the lifing sheet's 15 columns:
@@ -547,6 +596,27 @@ async function addRow(value){
     return { ok: false, reason: 'Not a recognized code format.' };
   }
 
+  // Check whether this item's ID has already been recorded — either
+  // earlier this session, or previously in the SharePoint table itself
+  // (from any device/session). The remote check is best-effort: if
+  // Microsoft sign-in isn't set up yet or the check fails, we still
+  // catch same-session duplicates locally rather than blocking scanning
+  // entirely.
+  const id = `${parsed.itemNumber}/${parsed.batchNumber}`;
+  const alreadyLocal = rows.some(r => `${r.itemNumber}/${r.batchNumber}` === id);
+  let alreadyRemote = false;
+  if(!alreadyLocal){
+    try{
+      const existingIds = await fetchExistingIds();
+      alreadyRemote = existingIds.has(id);
+    } catch(e){ /* can't check remotely right now — local check still applies */ }
+  }
+  if(alreadyLocal || alreadyRemote){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    await showDuplicateAlert(id);
+    return { ok: false, reason: 'already_logged' };
+  }
+
   const chassisNumber = await promptChassisNumber();
 
   const ts = fmtTs(new Date());
@@ -598,7 +668,7 @@ async function submitManualValue(){
   manualInput.value = '';
   if(!val) return;
   const result = await addRow(val);
-  if(!result.ok && result.reason !== 'duplicate'){
+  if(!result.ok && !['duplicate', 'already_logged'].includes(result.reason)){
     camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
     camStatus.classList.add('bad-flash');
     setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
@@ -902,7 +972,7 @@ captureBtn.addEventListener('click', async () => {
         camStatus.textContent = 'Scanned: ' + value;
         camStatus.classList.add('good');
         setTimeout(() => camStatus.classList.remove('good'), 500);
-      } else if(result.reason !== 'duplicate'){
+      } else if(!['duplicate', 'already_logged'].includes(result.reason)){
         camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
         camStatus.classList.add('bad-flash');
         setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
@@ -994,7 +1064,7 @@ async function tick(){
           camStatus.textContent = 'Scanned: ' + value;
           camStatus.classList.add('good');
           setTimeout(() => camStatus.classList.remove('good'), 500);
-        } else if(result.reason !== 'duplicate'){
+        } else if(!['duplicate', 'already_logged'].includes(result.reason)){
           camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
           camStatus.classList.add('bad-flash');
           setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
