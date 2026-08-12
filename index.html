@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.8</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.9</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -223,34 +223,46 @@ async function postToSheet(row){
   const url = sheetUrlInput.value.trim();
   if(!url) throw new Error('No Web App URL set.');
 
-  const res = await fetch(url, {
-    method: 'POST',
-    body: JSON.stringify({
-      timestamp: row.ts,
-      partNumber: row.partNumber,
-      itemNumber: row.itemNumber,
-      batchNumber: row.batchNumber,
-      inHouse: row.inHouse
-    })
+  const body = JSON.stringify({
+    timestamp: row.ts,
+    partNumber: row.partNumber,
+    itemNumber: row.itemNumber,
+    batchNumber: row.batchNumber,
+    inHouse: row.inHouse
   });
 
-  const text = await res.text();
-  let parsed;
-  try{ parsed = JSON.parse(text); } catch(e){ parsed = null; }
+  try{
+    const res = await fetch(url, { method: 'POST', body });
 
-  if(!res.ok){
-    throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
+    const text = await res.text();
+    let parsed;
+    try{ parsed = JSON.parse(text); } catch(e){ parsed = null; }
+
+    if(!res.ok){
+      throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
+    }
+    if(parsed && parsed.status && parsed.status !== 'ok'){
+      throw new Error('Script reported: ' + text.slice(0, 200));
+    }
+    if(!parsed){
+      // Got a 200 but not the JSON we expect — usually means the URL
+      // redirected to a Google sign-in page rather than running the
+      // script (deployment access isn't set to "Anyone").
+      throw new Error('Unexpected response — deployment may not be public. Response started: ' + text.slice(0, 150));
+    }
+    return { status: 'confirmed' };
+  } catch(err){
+    // "Failed to fetch" is a browser-level network/CORS block, not the
+    // script rejecting the request — this happens with some Apps Script
+    // deployments because of how Google's redirect handles CORS headers.
+    // Fall back to a fire-and-forget send so the write still goes
+    // through even though we can't read a response back.
+    if(err instanceof TypeError){
+      await fetch(url, { method: 'POST', mode: 'no-cors', body });
+      return { status: 'sent_unconfirmed' };
+    }
+    throw err;
   }
-  if(parsed && parsed.status && parsed.status !== 'ok'){
-    throw new Error('Script reported: ' + text.slice(0, 200));
-  }
-  if(!parsed){
-    // Got a 200 but not the JSON we expect — usually means the URL
-    // redirected to a Google sign-in page rather than running the
-    // script (deployment access isn't set to "Anyone").
-    throw new Error('Unexpected response — deployment may not be public. Response started: ' + text.slice(0, 150));
-  }
-  return parsed;
 }
 
 async function uploadRow(row){
@@ -258,9 +270,14 @@ async function uploadRow(row){
   uploadStatus.textContent = 'Uploading...';
   uploadStatus.style.color = '';
   try{
-    await postToSheet(row);
-    uploadStatus.textContent = 'Uploaded to sheet.';
-    uploadStatus.style.color = 'var(--good)';
+    const result = await postToSheet(row);
+    if(result.status === 'sent_unconfirmed'){
+      uploadStatus.textContent = 'Sent (unconfirmed — browser couldn\'t read the response, but it likely went through). Check your sheet.';
+      uploadStatus.style.color = 'var(--good)';
+    } else {
+      uploadStatus.textContent = 'Uploaded to sheet.';
+      uploadStatus.style.color = 'var(--good)';
+    }
   } catch(err){
     uploadStatus.textContent = 'Upload failed: ' + err.message;
     uploadStatus.style.color = 'var(--bad)';
@@ -271,14 +288,18 @@ document.getElementById('test-connection-btn').addEventListener('click', async (
   uploadStatus.textContent = 'Testing...';
   uploadStatus.style.color = '';
   try{
-    await postToSheet({
+    const result = await postToSheet({
       ts: fmtTs(new Date()),
       partNumber: 'TESTPART01',
       itemNumber: '001',
       batchNumber: 'TEST',
       inHouse: 'No'
     });
-    uploadStatus.textContent = 'Test row sent successfully — check your sheet for a TESTPART01 row.';
+    if(result.status === 'sent_unconfirmed'){
+      uploadStatus.textContent = 'Test sent (unconfirmed due to CORS) — check your sheet for a TESTPART01 row to confirm it actually landed.';
+    } else {
+      uploadStatus.textContent = 'Test row confirmed — check your sheet for a TESTPART01 row.';
+    }
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
