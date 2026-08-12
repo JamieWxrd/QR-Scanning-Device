@@ -258,16 +258,60 @@ camToggle.addEventListener('click', () => {
   scanning ? stopCamera() : startCamera();
 });
 
+// Boosts contrast on low-contrast targets like laser-etched metal,
+// where the code and background are nearly the same shade of grey.
+function boostContrast(imageData){
+  const d = imageData.data;
+  let min = 255, max = 0;
+  for(let i = 0; i < d.length; i += 4){
+    const gray = (d[i] + d[i+1] + d[i+2]) / 3;
+    if(gray < min) min = gray;
+    if(gray > max) max = gray;
+  }
+  const range = max - min || 1;
+  for(let i = 0; i < d.length; i += 4){
+    const gray = (d[i] + d[i+1] + d[i+2]) / 3;
+    const stretched = ((gray - min) / range) * 255;
+    d[i] = d[i+1] = d[i+2] = stretched;
+  }
+  return imageData;
+}
+
 function tick(){
   if(!scanning) return;
   if(video.readyState === video.HAVE_ENOUGH_DATA){
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const code = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: 'dontInvert'
+
+    // Crop to the center scan box (matches the on-screen guide) and
+    // upscale it — this gives jsQR more effective resolution on small
+    // codes and cuts out noisy background (e.g. brushed metal texture).
+    const sx = canvas.width * 0.15, sy = canvas.height * 0.15;
+    const sw = canvas.width * 0.70, sh = canvas.height * 0.70;
+    const cropCanvas = document.createElement('canvas');
+    const scale = 2;
+    cropCanvas.width = sw * scale;
+    cropCanvas.height = sh * scale;
+    const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
+    cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, cropCanvas.width, cropCanvas.height);
+
+    let imageData = cropCtx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+    imageData = boostContrast(imageData);
+
+    let code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'attemptBoth'
     });
+
+    // Fallback: try the full uncropped frame in case the code isn't
+    // inside the guide box.
+    if(!code){
+      const fullData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      code = jsQR(fullData.data, fullData.width, fullData.height, {
+        inversionAttempts: 'attemptBoth'
+      });
+    }
+
     if(code && code.data){
       camStatus.textContent = 'Scanned: ' + code.data;
       camStatus.classList.add('good');
