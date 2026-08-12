@@ -75,7 +75,7 @@
 </head>
 <body>
 
-<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v1.9</span></h1>
+<h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.0</span></h1>
 <p class="sub">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
 
 <div class="card">
@@ -131,7 +131,7 @@
     <table>
       <thead><tr>
         <th>#</th><th>Timestamp</th><th>Part Number</th><th>Item #</th>
-        <th>Batch</th><th>In-House</th><th></th>
+        <th>Batch</th><th>In-House</th><th>Unparsed Raw Value</th><th></th>
       </tr></thead>
       <tbody id="log-body"></tbody>
     </table>
@@ -262,9 +262,11 @@ function render(){
   logBody.innerHTML = '';
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
+    const unparsed = !r.partNumber && !r.batchNumber ? r.value : '';
     tr.innerHTML = `<td>${i+1}</td><td>${r.ts}</td>`
       + `<td>${escapeHtml(r.partNumber)}</td><td>${escapeHtml(r.itemNumber)}</td>`
       + `<td>${escapeHtml(r.batchNumber)}</td><td>${escapeHtml(r.inHouse)}</td>`
+      + `<td style="color:${unparsed ? 'var(--bad)' : 'inherit'};">${escapeHtml(unparsed)}</td>`
       + `<td class="del" data-i="${i}">✕</td>`;
     logBody.appendChild(tr);
   });
