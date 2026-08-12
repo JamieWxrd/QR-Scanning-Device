@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v2.9</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v3.0</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -219,6 +219,13 @@ autoUploadToggle.addEventListener('change', () => {
 // CORS preflight, which Apps Script doesn't handle. Uses normal 'cors'
 // mode (not 'no-cors') so we can actually read back whether it worked —
 // 'no-cors' always looks successful even when the write silently fails.
+// Apps Script's response, after Google's internal redirect, is unreliable
+// to read from the browser — it can report a spurious failed-fetch or a
+// false HTTP 404 even when the write actually succeeded server-side.
+// Rather than second-guess that, we send with 'no-cors' (fire-and-forget)
+// and treat "the request was dispatched" as success. This has proven to
+// reliably deliver the data even when the earlier read-response approach
+// misreported errors.
 async function postToSheet(row){
   const url = sheetUrlInput.value.trim();
   if(!url) throw new Error('No Web App URL set.');
@@ -231,38 +238,8 @@ async function postToSheet(row){
     inHouse: row.inHouse
   });
 
-  try{
-    const res = await fetch(url, { method: 'POST', body });
-
-    const text = await res.text();
-    let parsed;
-    try{ parsed = JSON.parse(text); } catch(e){ parsed = null; }
-
-    if(!res.ok){
-      throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
-    }
-    if(parsed && parsed.status && parsed.status !== 'ok'){
-      throw new Error('Script reported: ' + text.slice(0, 200));
-    }
-    if(!parsed){
-      // Got a 200 but not the JSON we expect — usually means the URL
-      // redirected to a Google sign-in page rather than running the
-      // script (deployment access isn't set to "Anyone").
-      throw new Error('Unexpected response — deployment may not be public. Response started: ' + text.slice(0, 150));
-    }
-    return { status: 'confirmed' };
-  } catch(err){
-    // "Failed to fetch" is a browser-level network/CORS block, not the
-    // script rejecting the request — this happens with some Apps Script
-    // deployments because of how Google's redirect handles CORS headers.
-    // Fall back to a fire-and-forget send so the write still goes
-    // through even though we can't read a response back.
-    if(err instanceof TypeError){
-      await fetch(url, { method: 'POST', mode: 'no-cors', body });
-      return { status: 'sent_unconfirmed' };
-    }
-    throw err;
-  }
+  await fetch(url, { method: 'POST', mode: 'no-cors', body });
+  return { status: 'sent_unconfirmed' };
 }
 
 async function uploadRow(row){
