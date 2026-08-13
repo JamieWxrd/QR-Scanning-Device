@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.13</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.14</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -715,7 +715,7 @@ async function removeChassisFromRow(rowIndex){
     throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
   await forceRecalculate();
-  return { status: 'confirmed' };
+  return { status: 'confirmed', capturedOuting: values[19], capturedDate: values[20], capturedDistance: values[21] };
 }
 
 // Appends one row to the named Table in the SharePoint Excel workbook via
@@ -980,8 +980,8 @@ async function removeChassisScan(value){
   }
 
   try{
-    await removeChassisFromRow(existingRemoteRow.index);
-    const msg = `Chassis removed from item ${id}.`;
+    const result = await removeChassisFromRow(existingRemoteRow.index);
+    const msg = `Chassis removed from item ${id}. Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}"`;
     uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--good)';
     camStatus.textContent = msg;
