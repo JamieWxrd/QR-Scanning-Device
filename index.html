@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.14</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.15</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -684,13 +684,21 @@ async function removeChassisFromRow(rowIndex){
   // stale one from before the latest Outings edits caught up.
   await forceRecalculate();
 
-  const rowRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  // Reading via the row's range with values AND formulas explicitly
+  // requested lets us confirm exactly what's being captured — values
+  // should be the computed result (e.g. an outing name), formulas
+  // should be the "=IF(...)" text. If values ever came back looking
+  // like formula text, that'd mean something is very wrong with how
+  // Graph is answering this request.
+  const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})/range?$select=values,formulas`;
+  const rowRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
   const rowText = await rowRes.text();
   if(!rowRes.ok){
     throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
   }
   const rowData = JSON.parse(rowText);
   const current = (rowData.values && rowData.values[0]) || [];
+  const currentFormulas = (rowData.formulas && rowData.formulas[0]) || [];
 
   const values = new Array(22).fill(null);
   values[14] = '';                 // On Chassis Since
@@ -715,7 +723,15 @@ async function removeChassisFromRow(rowIndex){
     throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
   await forceRecalculate();
-  return { status: 'confirmed', capturedOuting: values[19], capturedDate: values[20], capturedDistance: values[21] };
+  return {
+    status: 'confirmed',
+    capturedOuting: values[19],
+    capturedDate: values[20],
+    capturedDistance: values[21],
+    debugOutingValue: current[16],
+    debugOutingFormula: currentFormulas[16],
+    debugChassisValue: current[15]
+  };
 }
 
 // Appends one row to the named Table in the SharePoint Excel workbook via
@@ -981,7 +997,7 @@ async function removeChassisScan(value){
 
   try{
     const result = await removeChassisFromRow(existingRemoteRow.index);
-    const msg = `Chassis removed from item ${id}. Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}"`;
+    const msg = `Chassis removed from item ${id}. Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}" | DEBUG pre-removal Ch '#: "${result.debugChassisValue}", Outing value: "${result.debugOutingValue}", Outing formula: "${result.debugOutingFormula}"`;
     uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--good)';
     camStatus.textContent = msg;
