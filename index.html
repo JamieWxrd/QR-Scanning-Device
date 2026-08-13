@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.5</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.7</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -689,12 +689,32 @@ async function updateChassisOnRow(rowIndex, newChassis){
 // untouched either way (Total Distance still adds Banked Distance to
 // whatever Distance Since Changing Chassis now holds, frozen or not, so
 // it stays correct).
+//
+// This writes through the underlying worksheet cell range rather than
+// the table-row API, and does it as four separate, sequential writes —
+// matching exactly how you'd do this by hand in Excel — rather than one
+// combined write:
+//   1. Copy the current Distance Since Changing Chassis/Outing/Date/
+//      Distance (km) results.
+//   2. Blank Ch '# and On Chassis Since.
+//   3. Explicitly clear Distance Since Changing Chassis/Outing/Date/
+//      Distance (km) (so nothing formula-driven is left sitting in
+//      those cells before we paste into them).
+//   4. Paste the copied values back into those same four cells.
+// Doing the blank-formula/paste-value steps separately (rather than in
+// the same write as clearing Ch '#) is what actually gets the literal
+// values to stick — writing everything in one shot was letting Excel's
+// calculated-column formula win and evaluate blank.
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
   const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
-  const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
+  const headers = {
+    Authorization: 'Bearer ' + token,
+    'Content-Type': 'application/json',
+    'workbook-session-id': sessionId
+  };
 
   // Force a recalculation before reading — otherwise the snapshot we're
   // about to freeze into place could be a stale one from before the
@@ -702,47 +722,74 @@ async function removeChassisFromRow(rowIndex){
   // blank) result permanently instead of the real one.
   await forceRecalculate();
 
-  const rowRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-  const rowText = await rowRes.text();
-  if(!rowRes.ok){
-    throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
+  // Getting the row's range (rather than its table-row resource) gives
+  // us both its current values AND the underlying worksheet + cell
+  // address in one call, which we need to write via the range API below.
+  const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})/range`;
+  const rangeRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const rangeText = await rangeRes.text();
+  if(!rangeRes.ok){
+    throw new Error(`Graph error reading current row (HTTP ${rangeRes.status}): ` + rangeText.slice(0, 200));
   }
-  const rowData = JSON.parse(rowText);
-  const current = (rowData.values && rowData.values[0]) || [];
+  const rangeData = JSON.parse(rangeText);
+  // Step 1: copy — this is the snapshot we'll paste back in step 4.
+  const current = (rangeData.values && rangeData.values[0]) || [];
+  const copiedDistanceSinceChassis = current[13] ?? '';
+  const copiedOuting = current[16] ?? '';
+  const copiedDate = current[17] ?? '';
+  const copiedDistanceKm = current[18] ?? '';
 
-  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
-
-  const values = new Array(19).fill(null);
-  values[13] = current[13] ?? '';  // Distance Since Changing Chassis — frozen at its last value
-  values[14] = '';                 // On Chassis Since
-  values[15] = '';                 // Ch '#
-  values[16] = current[16] ?? '';  // Outing — frozen
-  values[17] = current[17] ?? '';  // Date — frozen
-  values[18] = current[18] ?? '';  // Distance (km) — frozen
-
-  const res = await fetch(url, {
-    method: 'PATCH',
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'Content-Type': 'application/json',
-      'workbook-session-id': sessionId
-    },
-    body: JSON.stringify({ values: [ values ] })
-  });
-  const text = await res.text();
-  if(!res.ok){
-    let data;
-    try{ data = JSON.parse(text); } catch(e){ data = null; }
-    throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+  // rangeData.address looks like "Sheet3!A5:S5" (or "'Sheet 3'!A5:S5"
+  // if the sheet name has a space) — split off the sheet name so we can
+  // target the worksheet range endpoint directly.
+  const fullAddress = rangeData.address || '';
+  const bangIdx = fullAddress.indexOf('!');
+  const worksheetName = (bangIdx === -1 ? '' : fullAddress.slice(0, bangIdx)).replace(/^'|'$/g, '');
+  const cellAddress = bangIdx === -1 ? fullAddress : fullAddress.slice(bangIdx + 1);
+  if(!worksheetName || !cellAddress){
+    throw new Error('Could not resolve worksheet/cell address for this row.');
   }
-  // Deliberately NOT calling forceRecalculate() here. Distance Since
-  // Changing Chassis/Outing/Date/Distance (km) are Excel Table
-  // calculated columns — if they're still linked as a calculated column
-  // at this point, a recalculation right after this write can make
-  // Excel re-assert the column's formula over the literal values we
-  // just froze in, instantly reverting the freeze back to a blank
-  // result now that Ch '# is empty. The values we wrote are already
-  // final — nothing here needs a recalc to "finish".
+  const writeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/worksheets/${encodeURIComponent(worksheetName)}/range(address='${cellAddress}')`;
+
+  async function writeRow(values){
+    const res = await fetch(writeUrl, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ values: [ values ] })
+    });
+    const text = await res.text();
+    if(!res.ok){
+      let data;
+      try{ data = JSON.parse(text); } catch(e){ data = null; }
+      throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+    }
+  }
+
+  // Step 2: blank Ch '# and On Chassis Since only.
+  const blankChassis = new Array(19).fill(null);
+  blankChassis[14] = '';  // On Chassis Since
+  blankChassis[15] = '';  // Ch '#
+  await writeRow(blankChassis);
+
+  // Step 3: explicitly clear the four dependent cells.
+  const clearDependents = new Array(19).fill(null);
+  clearDependents[13] = '';  // Distance Since Changing Chassis
+  clearDependents[16] = '';  // Outing
+  clearDependents[17] = '';  // Date
+  clearDependents[18] = '';  // Distance (km)
+  await writeRow(clearDependents);
+
+  // Step 4: paste the copied values back in.
+  const pasteDependents = new Array(19).fill(null);
+  pasteDependents[13] = copiedDistanceSinceChassis;
+  pasteDependents[16] = copiedOuting;
+  pasteDependents[17] = copiedDate;
+  pasteDependents[18] = copiedDistanceKm;
+  await writeRow(pasteDependents);
+
+  // Deliberately NOT calling forceRecalculate() here — these values are
+  // meant to stay exactly as pasted, and a recalc immediately after
+  // risks undoing that.
   return { status: 'confirmed' };
 }
 
