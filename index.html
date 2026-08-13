@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.3</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -484,9 +484,15 @@ async function fetchExistingIds(){
 // Plain YYYY-MM-DD, no time component — this is what gets written into
 // the "Date Added" cell so it compares cleanly against Outings dates in
 // the SUMIFS/MAXIFS formulas (Excel reads this as a real date, not text).
+// DD/MM/YYYY — written into the "Date Added" cell so it displays and
+// compares consistently with dates entered manually in the Outings
+// sheet. Note: this format is locale-dependent for Excel to parse
+// correctly as a real date rather than text — worth double-checking a
+// test scan lands as an actual date, not text, same as we had to fix
+// before.
 function fmtDateOnly(d){
   const p = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`;
 }
 
 function buildLifingRow(row){
