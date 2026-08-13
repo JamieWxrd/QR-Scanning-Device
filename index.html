@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.17</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.18</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -566,11 +566,26 @@ async function forceRecalculate(){
   } catch(e){ /* best-effort — not fatal if this fails */ }
 }
 
-async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
+// rowIndex is the only thing the caller needs to have looked up in
+// advance — Total Distance is re-read here, right before the write,
+// rather than trusting whatever snapshot the caller took earlier (which
+// could be stale if time passed between detecting the duplicate and the
+// user actually confirming a new chassis in the popup).
+async function updateChassisOnRow(rowIndex, newChassis){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
   const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
+
+  const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
+  const rowRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const rowText = await rowRes.text();
+  if(!rowRes.ok){
+    throw new Error(`Graph error reading current Total Distance (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
+  }
+  const rowData = JSON.parse(rowText);
+  const currentTotalDistance = Number((rowData.values && rowData.values[0] && rowData.values[0][4]) || 0) || 0;
+
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
   // Full 19-column row, null everywhere except the three cells we're
@@ -579,7 +594,7 @@ async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
   // Distance Since Changing Chassis) and every other value on the row
   // untouched.
   const values = new Array(19).fill(null);
-  values[12] = currentTotalDistance;     // Banked Distance
+  values[12] = currentTotalDistance;     // Banked Distance — freshly read Total Distance, right before this write
   values[14] = fmtDateOnly(new Date());  // On Chassis Since
   values[15] = newChassis;               // Ch '#
 
@@ -789,7 +804,7 @@ async function addRow(value){
       uploadStatus.textContent = 'Updating chassis...';
       uploadStatus.style.color = '';
       try{
-        await updateChassisOnRow(existingRemoteRow.index, newChassis, existingRemoteRow.totalDistance);
+        await updateChassisOnRow(existingRemoteRow.index, newChassis);
         uploadStatus.textContent = `Chassis updated to ${newChassis} for item ${id}.`;
         uploadStatus.style.color = 'var(--good)';
       } catch(err){
