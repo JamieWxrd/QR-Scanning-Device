@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.7</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.8</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -146,6 +146,9 @@
     <button class="btn-secondary" id="ms-signin-btn">Sign in with Microsoft</button>
   </div>
   <div class="status" id="ms-signin-status" style="margin-top:6px;">Not signed in.</div>
+  <div class="row" style="margin-top:6px;">
+    <button class="btn-secondary" id="ms-signout-btn" style="display:none;">Sign Out</button>
+  </div>
 
   <div class="row" style="align-items:center; margin-top:10px;">
     <label style="display:flex; align-items:center; gap:8px; margin:0; font-size:14px; color:var(--text);">
@@ -263,6 +266,7 @@ const MS_TENANT_ID = '2358dd77-b9ae-40da-840d-3b64bf577371';
 
 const msSigninBtn = document.getElementById('ms-signin-btn');
 const msSigninStatus = document.getElementById('ms-signin-status');
+const msSignoutBtn = document.getElementById('ms-signout-btn');
 const autoUploadToggle = document.getElementById('auto-upload-toggle');
 const uploadStatus = document.getElementById('upload-status');
 const settingsToggle = document.getElementById('settings-toggle');
@@ -338,9 +342,11 @@ function updateSignInStatus(){
     msSigninStatus.style.color = account ? 'var(--good)' : '';
     // Once signed in, there's nothing left for the button to do.
     msSigninBtn.style.display = account ? 'none' : '';
+    msSignoutBtn.style.display = account ? '' : 'none';
   } catch(e){
     msSigninStatus.textContent = 'Not signed in.';
     msSigninBtn.style.display = '';
+    msSignoutBtn.style.display = 'none';
   }
 }
 
@@ -381,6 +387,13 @@ msSigninBtn.addEventListener('click', async () => {
     msSigninStatus.textContent = 'Sign-in failed: ' + err.message;
     msSigninStatus.style.color = 'var(--bad)';
   }
+});
+
+msSignoutBtn.addEventListener('click', () => {
+  try{
+    if(msalInstance) msalInstance.setActiveAccount(null);
+  } catch(e){ /* ignore */ }
+  updateSignInStatus();
 });
 
 // Try to restore sign-in status on load once the Client ID/Tenant ID
