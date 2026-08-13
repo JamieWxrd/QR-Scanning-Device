@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.13</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.14</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -94,14 +94,6 @@
   <div id="camera-wrap" style="display:none; margin-top:10px;">
     <label for="camera-select">Camera lens</label>
     <select id="camera-select" style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font-size:14px;"></select>
-  </div>
-  <div id="zoom-wrap" style="display:none; margin-top:10px;">
-    <label for="zoom-slider">Zoom</label>
-    <input type="range" id="zoom-slider" min="1" max="1" step="0.1" value="1" style="width:100%;">
-  </div>
-  <div id="focus-wrap" style="display:none; margin-top:10px;">
-    <label for="focus-slider">Manual focus (near ↔ far)</label>
-    <input type="range" id="focus-slider" min="0" max="1" step="0.01" value="0" style="width:100%;">
   </div>
   <div class="row">
     <button class="btn-primary" id="cam-toggle">Start Camera</button>
@@ -272,12 +264,8 @@ const camToggle = document.getElementById('cam-toggle');
 const video = document.getElementById('video');
 const clearBtn = document.getElementById('clear-btn');
 const captureBtn = document.getElementById('capture-btn');
-const zoomWrap = document.getElementById('zoom-wrap');
-const zoomSlider = document.getElementById('zoom-slider');
 const cameraWrap = document.getElementById('camera-wrap');
 const cameraSelect = document.getElementById('camera-select');
-const focusWrap = document.getElementById('focus-wrap');
-const focusSlider = document.getElementById('focus-slider');
 // The scan log always writes to this specific SharePoint file/table — it
 // doesn't change, so it's hardcoded rather than asked for in settings.
 const SP_FILE_LINK = 'https://msportcouk.sharepoint.com/:x:/r/sites/M-SportBarcodingSP/Shared%20Documents/LIFING%20SHEET/RALLY%202%20LIFING%20TEMPLATE.xlsm?d=w237901f8e05e45a898e3ad590feb82a4&csf=1&web=1&e=9CvGu2';
@@ -967,37 +955,6 @@ async function startCamera(deviceId){
         try{ await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); }
         catch(e){ /* ignore unsupported */ }
       }
-      // Expose a zoom slider if the device supports optical/digital zoom —
-      // small etched codes often just need to fill more of the frame.
-      if(caps.zoom && caps.zoom.max > caps.zoom.min){
-        zoomWrap.style.display = 'block';
-        zoomSlider.min = caps.zoom.min;
-        zoomSlider.max = caps.zoom.max;
-        zoomSlider.step = caps.zoom.step || 0.1;
-        zoomSlider.value = caps.zoom.min;
-        zoomSlider.oninput = () => {
-          track.applyConstraints({ advanced: [{ zoom: Number(zoomSlider.value) }] }).catch(()=>{});
-        };
-      } else {
-        zoomWrap.style.display = 'none';
-      }
-      // Expose a manual focus slider when the camera exposes a focus
-      // distance range — lets you dial in close focus directly instead
-      // of relying on autofocus, which some phones won't do below their
-      // "normal" minimum focus distance.
-      if(caps.focusDistance && caps.focusDistance.max > caps.focusDistance.min){
-        focusWrap.style.display = 'block';
-        focusSlider.min = caps.focusDistance.min;
-        focusSlider.max = caps.focusDistance.max;
-        focusSlider.step = caps.focusDistance.step || 0.01;
-        focusSlider.oninput = () => {
-          track.applyConstraints({
-            advanced: [{ focusMode: 'manual', focusDistance: Number(focusSlider.value) }]
-          }).catch(()=>{});
-        };
-      } else {
-        focusWrap.style.display = 'none';
-      }
     }
 
     scanning = true;
@@ -1043,8 +1000,6 @@ function stopCamera(){
   camStatus.textContent = 'Camera stopped.';
   camToggle.textContent = 'Start Camera';
   captureBtn.style.display = 'none';
-  zoomWrap.style.display = 'none';
-  focusWrap.style.display = 'none';
 }
 
 camToggle.addEventListener('click', () => {
@@ -1112,7 +1067,7 @@ captureBtn.addEventListener('click', async () => {
         setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
       }
     } else {
-      camStatus.textContent = 'No code found in photo — try moving closer, reducing glare, or using the zoom slider.';
+      camStatus.textContent = 'No code found in photo — try moving closer or reducing glare.';
     }
   } catch(err){
     camStatus.textContent = 'Capture failed: ' + err.message;
