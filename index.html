@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.7</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.12</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -275,17 +275,6 @@ const videoWrap = document.getElementById('video-wrap');
 // doesn't change, so it's hardcoded rather than asked for in settings.
 const SP_FILE_LINK = 'https://msportcouk.sharepoint.com/:x:/r/sites/M-SportBarcodingSP/Shared%20Documents/LIFING%20SHEET/RALLY%202%20LIFING%20TEMPLATE.xlsm?d=w237901f8e05e45a898e3ad590feb82a4&csf=1&web=1&e=9CvGu2';
 const SP_TABLE_NAME = 'ScanLog';
-
-// Live formulas for the four columns that go blank/0 once Ch '# is
-// cleared (since they're all filtered by it). Kept here verbatim, as
-// given, so removeChassisFromRow can freeze a row's current results as
-// plain values on removal, and updateChassisOnRow can write these exact
-// formulas back in on a later chassis (re)assignment — restoring them
-// from frozen values to live formulas again for the new period.
-const FORMULA_DISTANCE_SINCE_CHASSIS = `=SUMIFS(Outings[Distance (km)], Outings[Ch '#], [@[Ch '#]], Outings[Date], ">="&[@[On Chassis Since]])`;
-const FORMULA_DATE = `=IF(COUNTIFS(Outings[Ch '#],[@[Ch '#]],Outings[Date],">="&[@[Date Added]])=0,"",MAXIFS(Outings[Date],Outings[Ch '#],[@[Ch '#]],Outings[Date],">="&[@[Date Added]]))`;
-const FORMULA_OUTING = `=IF([@Date]="","",XLOOKUP(1,(Outings[Ch '#]=[@[Ch '#]])*(Outings[Date]=[@Date]),Outings[Outing Name],""))`;
-const FORMULA_DISTANCE_KM = `=IF([@Date]="","",XLOOKUP(1,(Outings[Ch '#]=[@[Ch '#]])*(Outings[Date]=[@Date]),Outings[Distance (km)],""))`;
 
 const MS_CLIENT_ID = '973d7700-c939-4e2f-92f4-f3379ad7c3a5';
 const MS_TENANT_ID = '2358dd77-b9ae-40da-840d-3b64bf577371';
@@ -641,24 +630,16 @@ async function updateChassisOnRow(rowIndex, newChassis){
 
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Full 19-column row, null everywhere except the cells we're actually
-  // changing — the null-skips-the-cell trick used by buildLifingRow/
-  // rows/add keeps every other value on the row untouched.
-  //
-  // Distance Since Changing Chassis/Outing/Date/Distance (km) are
-  // explicitly re-written as their live formulas here (not left null)
-  // because a previous "Remove Chassis" on this same row would have
-  // frozen them into plain values — this restores them to formulas so
-  // the new chassis period actually accumulates going forward. If they
-  // were already live formulas, re-entering the same text is harmless.
+  // Full 19-column ScanLog row, null everywhere except the cells we're
+  // actually changing — the null-skips-the-cell trick used by
+  // buildLifingRow/rows/add keeps every other value on the row
+  // untouched. Distance Since Changing Chassis/Outing/Date/Distance (km)
+  // are live formulas the app never needs to touch, so they're just
+  // left null like everything else.
   const values = new Array(19).fill(null);
-  values[12] = currentTotalDistance;              // Banked Distance — freshly read Total Distance, right before this write
-  values[13] = FORMULA_DISTANCE_SINCE_CHASSIS;     // Distance Since Changing Chassis — restored to a live formula
-  values[14] = fmtDateOnly(new Date());            // On Chassis Since
-  values[15] = newChassis;                         // Ch '#
-  values[16] = FORMULA_OUTING;                     // Outing — restored to a live formula
-  values[17] = FORMULA_DATE;                       // Date — restored to a live formula
-  values[18] = FORMULA_DISTANCE_KM;                // Distance (km) — restored to a live formula
+  values[12] = currentTotalDistance;     // Banked Distance — freshly read Total Distance, right before this write
+  values[14] = fmtDateOnly(new Date());  // On Chassis Since
+  values[15] = newChassis;               // Ch '#
 
   const res = await fetch(url, {
     method: 'PATCH',
@@ -680,116 +661,38 @@ async function updateChassisOnRow(rowIndex, newChassis){
 }
 
 // Clears a part's chassis assignment. Ch '# and On Chassis Since are
-// blanked. Distance Since Changing Chassis, Outing, Date, and Distance
-// (km) are all filtered by Ch '#/On Chassis Since, so once those go
-// blank those four formulas would otherwise recompute to blank/0 — to
-// keep them showing exactly what they showed a moment ago, their
-// current results are read first and written back as plain frozen
-// values instead of formulas. Banked Distance and Total Distance are
-// untouched either way (Total Distance still adds Banked Distance to
-// whatever Distance Since Changing Chassis now holds, frozen or not, so
-// it stays correct).
-//
-// This writes through the underlying worksheet cell range rather than
-// the table-row API, and does it as four separate, sequential writes —
-// matching exactly how you'd do this by hand in Excel — rather than one
-// combined write:
-//   1. Copy the current Distance Since Changing Chassis/Outing/Date/
-//      Distance (km) results.
-//   2. Blank Ch '# and On Chassis Since.
-//   3. Explicitly clear Distance Since Changing Chassis/Outing/Date/
-//      Distance (km) (so nothing formula-driven is left sitting in
-//      those cells before we paste into them).
-//   4. Paste the copied values back into those same four cells.
-// Doing the blank-formula/paste-value steps separately (rather than in
-// the same write as clearing Ch '#) is what actually gets the literal
-// values to stick — writing everything in one shot was letting Excel's
-// calculated-column formula win and evaluate blank.
+// blanked — that's all the app writes. Distance Since Changing Chassis/
+// Outing/Date/Distance (km) are plain live formulas and will naturally
+// recompute to blank/0 once Ch '# is empty, which is expected —
+// Banked Distance/Total Distance/everything else on the row is
+// untouched.
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
   const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
-  const headers = {
-    Authorization: 'Bearer ' + token,
-    'Content-Type': 'application/json',
-    'workbook-session-id': sessionId
-  };
+  const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Force a recalculation before reading — otherwise the snapshot we're
-  // about to freeze into place could be a stale one from before the
-  // latest Outings edits caught up, which would freeze the wrong (often
-  // blank) result permanently instead of the real one.
+  const values = new Array(19).fill(null);
+  values[14] = '';  // On Chassis Since
+  values[15] = '';  // Ch '#
+
+  const res = await fetch(rowUrl, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'workbook-session-id': sessionId
+    },
+    body: JSON.stringify({ values: [ values ] })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    let data;
+    try{ data = JSON.parse(text); } catch(e){ data = null; }
+    throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+  }
   await forceRecalculate();
-
-  // Getting the row's range (rather than its table-row resource) gives
-  // us both its current values AND the underlying worksheet + cell
-  // address in one call, which we need to write via the range API below.
-  const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})/range`;
-  const rangeRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-  const rangeText = await rangeRes.text();
-  if(!rangeRes.ok){
-    throw new Error(`Graph error reading current row (HTTP ${rangeRes.status}): ` + rangeText.slice(0, 200));
-  }
-  const rangeData = JSON.parse(rangeText);
-  // Step 1: copy — this is the snapshot we'll paste back in step 4.
-  const current = (rangeData.values && rangeData.values[0]) || [];
-  const copiedDistanceSinceChassis = current[13] ?? '';
-  const copiedOuting = current[16] ?? '';
-  const copiedDate = current[17] ?? '';
-  const copiedDistanceKm = current[18] ?? '';
-
-  // rangeData.address looks like "Sheet3!A5:S5" (or "'Sheet 3'!A5:S5"
-  // if the sheet name has a space) — split off the sheet name so we can
-  // target the worksheet range endpoint directly.
-  const fullAddress = rangeData.address || '';
-  const bangIdx = fullAddress.indexOf('!');
-  const worksheetName = (bangIdx === -1 ? '' : fullAddress.slice(0, bangIdx)).replace(/^'|'$/g, '');
-  const cellAddress = bangIdx === -1 ? fullAddress : fullAddress.slice(bangIdx + 1);
-  if(!worksheetName || !cellAddress){
-    throw new Error('Could not resolve worksheet/cell address for this row.');
-  }
-  const writeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/worksheets/${encodeURIComponent(worksheetName)}/range(address='${cellAddress}')`;
-
-  async function writeRow(values){
-    const res = await fetch(writeUrl, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ values: [ values ] })
-    });
-    const text = await res.text();
-    if(!res.ok){
-      let data;
-      try{ data = JSON.parse(text); } catch(e){ data = null; }
-      throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
-    }
-  }
-
-  // Step 2: blank Ch '# and On Chassis Since only.
-  const blankChassis = new Array(19).fill(null);
-  blankChassis[14] = '';  // On Chassis Since
-  blankChassis[15] = '';  // Ch '#
-  await writeRow(blankChassis);
-
-  // Step 3: explicitly clear the four dependent cells.
-  const clearDependents = new Array(19).fill(null);
-  clearDependents[13] = '';  // Distance Since Changing Chassis
-  clearDependents[16] = '';  // Outing
-  clearDependents[17] = '';  // Date
-  clearDependents[18] = '';  // Distance (km)
-  await writeRow(clearDependents);
-
-  // Step 4: paste the copied values back in.
-  const pasteDependents = new Array(19).fill(null);
-  pasteDependents[13] = copiedDistanceSinceChassis;
-  pasteDependents[16] = copiedOuting;
-  pasteDependents[17] = copiedDate;
-  pasteDependents[18] = copiedDistanceKm;
-  await writeRow(pasteDependents);
-
-  // Deliberately NOT calling forceRecalculate() here — these values are
-  // meant to stay exactly as pasted, and a recalc immediately after
-  // risks undoing that.
   return { status: 'confirmed' };
 }
 
