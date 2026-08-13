@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.12</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.13</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -499,15 +499,15 @@ async function fetchExistingRows(){
   const data = JSON.parse(text);
   // Column order matches buildLifingRow: 0 ID, 1 Part No., 2 Dead,
   // 3 Date Added, 4 Total Distance, ..., 11 End of Life, 12 Banked
-  // Distance, 13 On Chassis Since, 14 Ch '#, 15 Outing, 16 Date,
-  // 17 Distance (km).
+  // Distance, 13 Distance Since Changing Chassis (formula), 14 On
+  // Chassis Since, 15 Ch '#, 16 Outing, 17 Date, 18 Distance (km).
   return (data.value || []).map(r => {
     const v = r.values && r.values[0] ? r.values[0] : [];
     return {
       index: r.index,
       id: String(v[0] || '').trim(),
       totalDistance: Number(v[4]) || 0,
-      chassis: String(v[14] || '').trim()
+      chassis: String(v[15] || '').trim()
     };
   });
 }
@@ -524,14 +524,15 @@ async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
   const table = SP_TABLE_NAME;
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Full 18-column row, null everywhere except the three cells we're
+  // Full 19-column row, null everywhere except the three cells we're
   // actually changing — same null-skips-the-cell trick used by
-  // buildLifingRow/rows/add, which keeps every formula and every other
-  // value on the row untouched.
-  const values = new Array(18).fill(null);
+  // buildLifingRow/rows/add, which keeps every formula (including
+  // Distance Since Changing Chassis) and every other value on the row
+  // untouched.
+  const values = new Array(19).fill(null);
   values[12] = currentTotalDistance;     // Banked Distance
-  values[13] = fmtDateOnly(new Date());  // On Chassis Since
-  values[14] = newChassis;               // Ch '#
+  values[14] = fmtDateOnly(new Date());  // On Chassis Since
+  values[15] = newChassis;               // Ch '#
 
   const res = await fetch(url, {
     method: 'PATCH',
@@ -598,6 +599,7 @@ function buildLifingRow(row){
     null,                     // Next Rebuild — formula (Index interval − Since Rebuild)
     null,                     // End of Life — formula (Index interval − Total Distance)
     0,                        // Banked Distance — locked-in total from any previous chassis, starts at 0
+    null,                     // Distance Since Changing Chassis — formula
     scanDate,                 // On Chassis Since — date the current chassis took effect
     row.chassisNumber || '',  // Ch '#
     null,                     // Outing — formula (most recent qualifying outing name)
