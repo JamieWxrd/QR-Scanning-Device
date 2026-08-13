@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.3</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -611,6 +611,11 @@ async function forceRecalculate(){
       },
       body: JSON.stringify({ calculationType: 'FullRebuild' })
     });
+    // The calculate call can return as soon as Graph accepts the
+    // request, not necessarily once Excel has actually finished
+    // recomputing — give it a moment before anything reads values back,
+    // otherwise a read right after this can still race ahead of it.
+    await new Promise(resolve => setTimeout(resolve, 1500));
   } catch(e){ /* best-effort — not fatal if this fails */ }
 }
 
