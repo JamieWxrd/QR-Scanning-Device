@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.12</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.13</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -630,16 +630,21 @@ async function updateChassisOnRow(rowIndex, newChassis){
 
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Full 19-column ScanLog row, null everywhere except the cells we're
+  // Full 22-column ScanLog row, null everywhere except the cells we're
   // actually changing — the null-skips-the-cell trick used by
   // buildLifingRow/rows/add keeps every other value on the row
   // untouched. Distance Since Changing Chassis/Outing/Date/Distance (km)
   // are live formulas the app never needs to touch, so they're just
-  // left null like everything else.
-  const values = new Array(19).fill(null);
+  // left null like everything else. Last Outing/Last Date/Last Distance
+  // are cleared here since they're no longer relevant once a live
+  // chassis is assigned again.
+  const values = new Array(22).fill(null);
   values[12] = currentTotalDistance;     // Banked Distance — freshly read Total Distance, right before this write
   values[14] = fmtDateOnly(new Date());  // On Chassis Since
   values[15] = newChassis;               // Ch '#
+  values[19] = '';                       // Last Outing — no longer needed
+  values[20] = '';                       // Last Date — no longer needed
+  values[21] = '';                       // Last Distance — no longer needed
 
   const res = await fetch(url, {
     method: 'PATCH',
@@ -661,11 +666,12 @@ async function updateChassisOnRow(rowIndex, newChassis){
 }
 
 // Clears a part's chassis assignment. Ch '# and On Chassis Since are
-// blanked — that's all the app writes. Distance Since Changing Chassis/
-// Outing/Date/Distance (km) are plain live formulas and will naturally
-// recompute to blank/0 once Ch '# is empty, which is expected —
-// Banked Distance/Total Distance/everything else on the row is
-// untouched.
+// blanked, and Outing/Date/Distance (km)'s current results are copied
+// into the plain Last Outing/Last Date/Last Distance columns first —
+// Outing/Date/Distance (km) themselves fall back to those via a simple
+// IF([@[Ch '#]]="",...) once Ch '# is blank, so they keep showing
+// exactly what they showed a moment ago. Banked Distance/Total Distance/
+// everything else on the row is untouched.
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
@@ -673,9 +679,25 @@ async function removeChassisFromRow(rowIndex){
   const table = SP_TABLE_NAME;
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  const values = new Array(19).fill(null);
-  values[14] = '';  // On Chassis Since
-  values[15] = '';  // Ch '#
+  // Force a recalculation before reading — otherwise the snapshot we're
+  // about to copy into Last Outing/Last Date/Last Distance could be a
+  // stale one from before the latest Outings edits caught up.
+  await forceRecalculate();
+
+  const rowRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const rowText = await rowRes.text();
+  if(!rowRes.ok){
+    throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
+  }
+  const rowData = JSON.parse(rowText);
+  const current = (rowData.values && rowData.values[0]) || [];
+
+  const values = new Array(22).fill(null);
+  values[14] = '';                 // On Chassis Since
+  values[15] = '';                 // Ch '#
+  values[19] = current[16] ?? '';  // Last Outing — copied from current Outing result
+  values[20] = current[17] ?? '';  // Last Date — copied from current Date result
+  values[21] = current[18] ?? '';  // Last Distance — copied from current Distance (km) result
 
   const res = await fetch(rowUrl, {
     method: 'PATCH',
@@ -749,7 +771,10 @@ function buildLifingRow(row){
     row.chassisNumber || '',  // Ch '#
     null,                     // Outing — formula (most recent qualifying outing name)
     null,                     // Date — formula (most recent qualifying outing date)
-    null                      // Distance (km) — formula (most recent qualifying outing distance)
+    null,                     // Distance (km) — formula (most recent qualifying outing distance)
+    null,                     // Last Outing — plain value, blank until a chassis is ever removed
+    null,                     // Last Date — plain value, blank until a chassis is ever removed
+    null                      // Last Distance — plain value, blank until a chassis is ever removed
   ];
 }
 
