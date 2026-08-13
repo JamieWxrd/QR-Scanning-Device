@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.11</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.12</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -716,13 +716,15 @@ async function addRow(value){
   // entirely.
   const id = `${parsed.itemNumber}/${parsed.batchNumber}`;
   const alreadyLocal = rows.some(r => `${r.itemNumber}/${r.batchNumber}` === id);
+  // Always check the live table too — even if this item was already
+  // scanned earlier in this same session, we still need its row
+  // index/current chassis/current Total Distance from SharePoint to be
+  // able to apply a chassis update below.
   let existingRemoteRow = null;
-  if(!alreadyLocal){
-    try{
-      const existingRows = await fetchExistingRows();
-      existingRemoteRow = existingRows.find(r => r.id === id) || null;
-    } catch(e){ /* can't check remotely right now — local check still applies */ }
-  }
+  try{
+    const existingRows = await fetchExistingRows();
+    existingRemoteRow = existingRows.find(r => r.id === id) || null;
+  } catch(e){ /* can't check remotely right now — local check still applies */ }
   if(alreadyLocal || existingRemoteRow){
     if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
     const currentChassis = existingRemoteRow ? existingRemoteRow.chassis : '';
