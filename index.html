@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.14</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.15</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -506,6 +506,29 @@ async function fetchExistingRows(){
 // accumulated, so distance racked up under the old chassis is preserved
 // rather than lost when the SUMIFS formula starts filtering by the new
 // chassis number.
+// Explicitly asks Excel to recalculate the workbook. API-driven writes
+// (rows/add, this PATCH) update the underlying cell values but don't
+// always trigger the same automatic recalculation that typing directly
+// into the sheet does — so formulas depending on what we just wrote
+// (Outing/Date/Distance (km), Total Distance, etc.) can be left showing
+// stale results until something forces a recalc. Best-effort: failures
+// here shouldn't block the write itself from being reported as a
+// success, so errors are swallowed.
+async function forceRecalculate(){
+  try{
+    const token = await getAccessToken();
+    const { driveId, itemId } = await resolveDriveItem();
+    await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/application/calculate`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ calculationType: 'Full' })
+    });
+  } catch(e){ /* best-effort — not fatal if this fails */ }
+}
+
 async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
@@ -536,6 +559,7 @@ async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
     try{ data = JSON.parse(text); } catch(e){ data = null; }
     throw new Error(`Graph error updating chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
+  await forceRecalculate();
   return { status: 'confirmed' };
 }
 
@@ -618,6 +642,7 @@ async function postRowToExcel(row){
     try{ data = JSON.parse(text); } catch(e){ data = null; }
     throw new Error(`Graph error (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
+  await forceRecalculate();
   return { status: 'confirmed' };
 }
 
