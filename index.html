@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.8</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.11</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -130,8 +130,10 @@
 <div class="card" id="duplicate-modal" style="display:none; position:fixed; top:30%; left:16px; right:16px; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
   <h2><span>Already Scanned</span></h2>
   <p class="sub" id="duplicate-message" style="margin:0;">This item is already in the database. It has not been added again.</p>
+  <input type="text" id="duplicate-chassis-input" placeholder="New chassis (leave blank to skip)" autocomplete="off" style="margin-top:10px;">
   <div class="row" style="margin-top:12px;">
-    <button class="btn-primary" id="duplicate-ok-btn">OK</button>
+    <button class="btn-secondary" id="duplicate-skip-btn">Skip</button>
+    <button class="btn-primary" id="duplicate-ok-btn">Update Chassis</button>
   </div>
 </div>
 
@@ -226,22 +228,42 @@ function promptChassisNumber(){
 const duplicateBackdrop = document.getElementById('duplicate-backdrop');
 const duplicateModal = document.getElementById('duplicate-modal');
 const duplicateMessage = document.getElementById('duplicate-message');
+const duplicateChassisInput = document.getElementById('duplicate-chassis-input');
 const duplicateOkBtn = document.getElementById('duplicate-ok-btn');
+const duplicateSkipBtn = document.getElementById('duplicate-skip-btn');
 
-function showDuplicateAlert(id){
+// Shown when a scanned item already exists in the database. Lets the
+// user optionally give it a new chassis number — nothing else about the
+// part is touched. Resolves to the trimmed new chassis string, or null
+// if the user skipped (left it blank / pressed Skip).
+function promptChassisUpdate(id, currentChassis){
   return new Promise(resolve => {
-    duplicateMessage.textContent = `Item ${id} is already in the database. It has not been added again.`;
+    duplicateMessage.textContent = `Item ${id} is already in the database` +
+      (currentChassis ? ` (current chassis: ${currentChassis})` : '') +
+      `. It has not been added again. Enter a new chassis below to update it, or skip.`;
+    duplicateChassisInput.value = '';
     duplicateModal.style.display = 'block';
     duplicateBackdrop.style.display = 'block';
+    setTimeout(() => duplicateChassisInput.focus(), 50);
 
-    function finish(){
+    function finish(newChassis){
       duplicateModal.style.display = 'none';
       duplicateBackdrop.style.display = 'none';
-      duplicateOkBtn.removeEventListener('click', finish);
+      duplicateOkBtn.removeEventListener('click', onUpdate);
+      duplicateSkipBtn.removeEventListener('click', onSkip);
+      duplicateChassisInput.removeEventListener('keydown', onKeydown);
       setTimeout(() => manualInput.focus(), 50);
-      resolve();
+      resolve(newChassis);
     }
-    duplicateOkBtn.addEventListener('click', finish);
+    function onUpdate(){
+      const val = duplicateChassisInput.value.trim();
+      finish(val ? val : null);
+    }
+    function onSkip(){ finish(null); }
+    function onKeydown(e){ if(e.key === 'Enter') onUpdate(); }
+    duplicateOkBtn.addEventListener('click', onUpdate);
+    duplicateSkipBtn.addEventListener('click', onSkip);
+    duplicateChassisInput.addEventListener('keydown', onKeydown);
   });
 }
 
@@ -460,21 +482,72 @@ async function resolveDriveItem(){
   return driveItemCache;
 }
 
-// Reads the current values of the ID column from the SharePoint table,
+// Reads every row currently in the SharePoint table (index + full values)
 // so a newly scanned item can be checked against everything already
-// recorded there — not just what's been scanned this session.
-async function fetchExistingIds(){
+// recorded there — not just what's been scanned this session — and, if
+// it's a duplicate, so we know which row to update and what its current
+// chassis/Total Distance are.
+async function fetchExistingRows(){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
-  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/ID/range`;
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows?$select=index,values`;
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
   const text = await res.text();
   if(!res.ok){
     throw new Error(`Graph error checking for duplicates (HTTP ${res.status}): ` + text.slice(0, 200));
   }
   const data = JSON.parse(text);
-  const values = (data.values || []).flat().map(v => String(v).trim()).filter(Boolean);
-  return new Set(values);
+  // Column order matches buildLifingRow: 0 ID, 1 Part No., 2 Dead,
+  // 3 Date Added, 4 Total Distance, ..., 11 End of Life, 12 Banked
+  // Distance, 13 On Chassis Since, 14 Ch '#, 15 Outing, 16 Date,
+  // 17 Distance (km).
+  return (data.value || []).map(r => {
+    const v = r.values && r.values[0] ? r.values[0] : [];
+    return {
+      index: r.index,
+      id: String(v[0] || '').trim(),
+      totalDistance: Number(v[4]) || 0,
+      chassis: String(v[14] || '').trim()
+    };
+  });
+}
+
+// Updates just the chassis-related cells of an existing row (Ch '#,
+// Banked Distance, On Chassis Since) — nothing else about the part changes.
+// Banked Distance is set to whatever Total Distance had already
+// accumulated, so distance racked up under the old chassis is preserved
+// rather than lost when the SUMIFS formula starts filtering by the new
+// chassis number.
+async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const table = SP_TABLE_NAME;
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
+
+  // Full 18-column row, null everywhere except the three cells we're
+  // actually changing — same null-skips-the-cell trick used by
+  // buildLifingRow/rows/add, which keeps every formula and every other
+  // value on the row untouched.
+  const values = new Array(18).fill(null);
+  values[12] = currentTotalDistance;     // Banked Distance
+  values[13] = fmtDateOnly(new Date());  // On Chassis Since
+  values[14] = newChassis;               // Ch '#
+
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ values: [ values ] })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    let data;
+    try{ data = JSON.parse(text); } catch(e){ data = null; }
+    throw new Error(`Graph error updating chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+  }
+  return { status: 'confirmed' };
 }
 
 // Appends one row to the named Table in the SharePoint Excel workbook via
@@ -516,7 +589,7 @@ function buildLifingRow(row){
     row.partNumber,           // Part No.
     false,                    // Dead
     scanDate,                 // Date Added — only outings on/after this count
-    null,                     // Total Distance — formula
+    null,                     // Total Distance — formula (Banked Distance + SUMIFS since On Chassis Since)
     scanDate,                 // Last Inspection — starts as the scan date (a new part counts as freshly inspected)
     null,                     // Since Inspection — formula
     null,                     // Next Inspection — formula (Index interval − Since Inspection)
@@ -524,7 +597,9 @@ function buildLifingRow(row){
     null,                     // Since Rebuild — formula
     null,                     // Next Rebuild — formula (Index interval − Since Rebuild)
     null,                     // End of Life — formula (Index interval − Total Distance)
-    row.chassisNumber || '',  // Ch #
+    0,                        // Banked Distance — locked-in total from any previous chassis, starts at 0
+    scanDate,                 // On Chassis Since — date the current chassis took effect
+    row.chassisNumber || '',  // Ch '#
     null,                     // Outing — formula (most recent qualifying outing name)
     null,                     // Date — formula (most recent qualifying outing date)
     null                      // Distance (km) — formula (most recent qualifying outing distance)
@@ -641,16 +716,34 @@ async function addRow(value){
   // entirely.
   const id = `${parsed.itemNumber}/${parsed.batchNumber}`;
   const alreadyLocal = rows.some(r => `${r.itemNumber}/${r.batchNumber}` === id);
-  let alreadyRemote = false;
+  let existingRemoteRow = null;
   if(!alreadyLocal){
     try{
-      const existingIds = await fetchExistingIds();
-      alreadyRemote = existingIds.has(id);
+      const existingRows = await fetchExistingRows();
+      existingRemoteRow = existingRows.find(r => r.id === id) || null;
     } catch(e){ /* can't check remotely right now — local check still applies */ }
   }
-  if(alreadyLocal || alreadyRemote){
+  if(alreadyLocal || existingRemoteRow){
     if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
-    await showDuplicateAlert(id);
+    const currentChassis = existingRemoteRow ? existingRemoteRow.chassis : '';
+    const newChassis = await promptChassisUpdate(id, currentChassis);
+    if(newChassis && existingRemoteRow){
+      uploadStatus.textContent = 'Updating chassis...';
+      uploadStatus.style.color = '';
+      try{
+        await updateChassisOnRow(existingRemoteRow.index, newChassis, existingRemoteRow.totalDistance);
+        uploadStatus.textContent = `Chassis updated to ${newChassis} for item ${id}.`;
+        uploadStatus.style.color = 'var(--good)';
+      } catch(err){
+        uploadStatus.textContent = 'Chassis update failed: ' + err.message;
+        uploadStatus.style.color = 'var(--bad)';
+      }
+    } else if(newChassis && !existingRemoteRow){
+      // Duplicate was only detected locally this session (not yet
+      // confirmed in the live table) — nothing to patch remotely.
+      uploadStatus.textContent = 'Item was scanned locally this session — sign in and re-scan once it is on SharePoint to update its chassis.';
+      uploadStatus.style.color = 'var(--bad)';
+    }
     return { ok: false, reason: 'already_logged' };
   }
 
