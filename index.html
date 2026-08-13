@@ -78,10 +78,15 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.19</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.21</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
+</div>
+
+<div class="row" style="margin-top:12px;">
+  <button class="btn-primary" id="mode-add-btn" style="flex:1;">Add / Update Chassis</button>
+  <button class="btn-secondary" id="mode-remove-btn" style="flex:1;">Remove Chassis</button>
 </div>
 <div style="margin-bottom:16px;"></div>
 
@@ -106,7 +111,6 @@
 <div class="card">
   <label for="manual-input">Manual entry / hardware scanner input</label>
   <input type="text" id="manual-input" placeholder="Scan or type code, then press Enter" autocomplete="off" autofocus>
-  <p class="sub" style="margin-top:8px;">A handheld barcode/QR scanner types like a keyboard and hits Enter automatically. This box stays focused automatically so a Zebra/hardware scanner can feed it directly — no need to tap in first.</p>
 </div>
 
 <div id="chassis-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:199;"></div>
@@ -282,6 +286,26 @@ const autoUploadToggle = document.getElementById('auto-upload-toggle');
 const uploadStatus = document.getElementById('upload-status');
 const settingsToggle = document.getElementById('settings-toggle');
 const settingsPanel = document.getElementById('settings-panel');
+
+// Add mode (the original flow) logs new parts and lets you change an
+// existing part's chassis. Remove mode instead clears the chassis off
+// an existing part — scanning it blanks Ch '# and On Chassis Since only,
+// nothing else on the row changes.
+let scanMode = 'add';
+const modeAddBtn = document.getElementById('mode-add-btn');
+const modeRemoveBtn = document.getElementById('mode-remove-btn');
+function setScanMode(mode){
+  scanMode = mode;
+  modeAddBtn.className = mode === 'add' ? 'btn-primary' : 'btn-secondary';
+  modeRemoveBtn.className = mode === 'remove' ? 'btn-primary' : 'btn-secondary';
+  modeAddBtn.style.flex = '1';
+  modeRemoveBtn.style.flex = '1';
+  camStatus.textContent = mode === 'remove'
+    ? 'Remove Chassis mode — scan an existing part to clear its chassis.'
+    : 'Tap "Start Camera" to begin scanning.';
+}
+modeAddBtn.addEventListener('click', () => setScanMode('add'));
+modeRemoveBtn.addEventListener('click', () => setScanMode('remove'));
 
 const settingsBackdrop = document.getElementById('settings-backdrop');
 const settingsClose = document.getElementById('settings-close');
@@ -618,6 +642,40 @@ async function updateChassisOnRow(rowIndex, newChassis){
   return { status: 'confirmed' };
 }
 
+// Clears a part's chassis assignment. Only Ch '# and On Chassis Since
+// are blanked — Banked Distance, Distance Since Changing Chassis, Total
+// Distance, and every other column on the row are left completely
+// untouched (null in the write, same as everywhere else on this row).
+async function removeChassisFromRow(rowIndex){
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
+  const table = SP_TABLE_NAME;
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
+
+  const values = new Array(19).fill(null);
+  values[14] = '';  // On Chassis Since
+  values[15] = '';  // Ch '#
+
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'workbook-session-id': sessionId
+    },
+    body: JSON.stringify({ values: [ values ] })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    let data;
+    try{ data = JSON.parse(text); } catch(e){ data = null; }
+    throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+  }
+  await forceRecalculate();
+  return { status: 'confirmed' };
+}
+
 // Appends one row to the named Table in the SharePoint Excel workbook via
 // Microsoft Graph's Excel API.
 // Builds one row matching the lifing sheet's 15 columns:
@@ -832,6 +890,73 @@ async function addRow(value){
   return { ok: true };
 }
 
+// Remove Chassis mode: scanning an existing part clears its Ch '# and
+// On Chassis Since only. Nothing else about the part — Banked Distance,
+// Distance Since Changing Chassis, Total Distance, everything — is
+// touched by the app. (Distance Since Changing Chassis is a live
+// formula filtered by Ch '#/On Chassis Since, so once those are blank
+// it will naturally recompute to 0 on its own — that's Excel's formula
+// doing that, not a write the app makes.)
+async function removeChassisScan(value){
+  if(!value) return { ok: false, reason: 'Empty scan.' };
+  const now = Date.now();
+  if(value === lastValue && (now - lastTime) < 2000) return { ok: false, reason: 'duplicate' };
+  lastValue = value; lastTime = now;
+
+  const parsed = parseCode(value);
+  if(!parsed.partNumber || !parsed.batchNumber){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    return { ok: false, reason: 'Not a recognized code format.' };
+  }
+
+  const id = `${parsed.itemNumber}/${parsed.batchNumber}`;
+  uploadStatus.textContent = 'Looking up item...';
+  uploadStatus.style.color = '';
+  let existingRemoteRow = null;
+  try{
+    const existingRows = await fetchExistingRows();
+    existingRemoteRow = existingRows.find(r => r.id === id) || null;
+  } catch(e){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    const msg = 'Could not check SharePoint: ' + e.message;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
+    return { ok: false, reason: 'not_found' };
+  }
+
+  if(!existingRemoteRow){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    const msg = `Item ${id} was not found in the database — nothing to remove.`;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
+    return { ok: false, reason: 'not_found' };
+  }
+
+  try{
+    await removeChassisFromRow(existingRemoteRow.index);
+    const msg = `Chassis removed from item ${id}.`;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--good)';
+    camStatus.textContent = msg;
+    if(navigator.vibrate) navigator.vibrate(60);
+    return { ok: true };
+  } catch(err){
+    const msg = 'Remove chassis failed: ' + err.message;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
+    return { ok: false, reason: 'not_found' };
+  }
+}
+
+// Routes a scanned/typed value to the Add or Remove flow depending on
+// which mode is currently selected at the top of the page.
+function processScan(value){
+  return scanMode === 'remove' ? removeChassisScan(value) : addRow(value);
+}
+
 function render(){
   logBody.innerHTML = '';
   rows.forEach((r, i) => {
@@ -871,8 +996,8 @@ async function submitManualValue(){
   const val = manualInput.value.trim();
   manualInput.value = '';
   if(!val) return;
-  const result = await addRow(val);
-  if(!result.ok && !['duplicate', 'already_logged'].includes(result.reason)){
+  const result = await processScan(val);
+  if(!result.ok && !['duplicate', 'already_logged', 'not_found'].includes(result.reason)){
     camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
     camStatus.classList.add('bad-flash');
     setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
@@ -1140,12 +1265,12 @@ captureBtn.addEventListener('click', async () => {
     }
 
     if(value){
-      const result = await addRow(value);
+      const result = await processScan(value);
       if(result.ok){
-        camStatus.textContent = 'Scanned: ' + value;
+        if(scanMode === 'add') camStatus.textContent = 'Scanned: ' + value;
         camStatus.classList.add('good');
         setTimeout(() => camStatus.classList.remove('good'), 500);
-      } else if(!['duplicate', 'already_logged'].includes(result.reason)){
+      } else if(!['duplicate', 'already_logged', 'not_found'].includes(result.reason)){
         camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
         camStatus.classList.add('bad-flash');
         setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
@@ -1232,12 +1357,12 @@ async function tick(){
       }
 
       if(value){
-        const result = await addRow(value);
+        const result = await processScan(value);
         if(result.ok){
-          camStatus.textContent = 'Scanned: ' + value;
+          if(scanMode === 'add') camStatus.textContent = 'Scanned: ' + value;
           camStatus.classList.add('good');
           setTimeout(() => camStatus.classList.remove('good'), 500);
-        } else if(!['duplicate', 'already_logged'].includes(result.reason)){
+        } else if(!['duplicate', 'already_logged', 'not_found'].includes(result.reason)){
           camStatus.textContent = 'Invalid code — not logged. (' + result.reason + ')';
           camStatus.classList.add('bad-flash');
           setTimeout(() => camStatus.classList.remove('bad-flash'), 800);
