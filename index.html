@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.22</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.0</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -294,6 +294,17 @@ const settingsPanel = document.getElementById('settings-panel');
 let scanMode = 'add';
 const modeAddBtn = document.getElementById('mode-add-btn');
 const modeRemoveBtn = document.getElementById('mode-remove-btn');
+// Focuses an input (so a hardware/Bluetooth scanner can feed it right
+// away) without popping up the on-screen keyboard on phones/tablets.
+// Briefly marking the field readonly stops mobile browsers from
+// treating the focus as "the user wants to type", then it's removed a
+// moment later so typing/scanning still works normally.
+function focusWithoutKeyboard(el){
+  el.setAttribute('readonly', 'readonly');
+  el.focus();
+  setTimeout(() => el.removeAttribute('readonly'), 100);
+}
+
 function setScanMode(mode){
   scanMode = mode;
   modeAddBtn.className = mode === 'add' ? 'btn-primary' : 'btn-secondary';
@@ -303,6 +314,7 @@ function setScanMode(mode){
   camStatus.textContent = mode === 'remove'
     ? 'Remove Chassis mode — scan an existing part to clear its chassis.'
     : 'Tap "Start Camera" to begin scanning.';
+  focusWithoutKeyboard(manualInput);
 }
 modeAddBtn.addEventListener('click', () => setScanMode('add'));
 modeRemoveBtn.addEventListener('click', () => setScanMode('remove'));
