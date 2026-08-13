@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v4.9</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.2</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -475,24 +475,39 @@ async function fetchExistingIds(){
 // everything else is a fresh-part default (0 for numeric tracking
 // fields, blank for dates not yet known) to be filled in or calculated
 // later.
+// `null` marks columns that are live Excel formulas on the ScanLog table
+// (Total Distance, Since Inspection, Since Rebuild, Outing, Date,
+// Distance (km) — all calculated from the Outings sheet by Chassis
+// Number). Passing null for a cell tells Graph's rows/add to leave it
+// alone instead of overwriting it, so Excel's calculated-column
+// auto-fill can populate it the same way it does for every other row.
+// Plain YYYY-MM-DD, no time component — this is what gets written into
+// the "Date Added" cell so it compares cleanly against Outings dates in
+// the SUMIFS/MAXIFS formulas (Excel reads this as a real date, not text).
+function fmtDateOnly(d){
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+
 function buildLifingRow(row){
   const id = `${row.itemNumber}/${row.batchNumber}`;
   return [
     id,                       // ID
     row.partNumber,           // Part No.
     false,                    // Dead
-    0,                        // Total Distance
+    fmtDateOnly(new Date()),  // Date Added — only outings on/after this count
+    null,                     // Total Distance — formula
     0,                        // Last Inspection (distance-based, not a date)
-    0,                        // Since Inspection
+    null,                     // Since Inspection — formula
     0,                        // Next Inspection (distance-based, not a date)
     0,                        // Last Rebuild (distance-based, not a date)
-    0,                        // Since Rebuild
+    null,                     // Since Rebuild — formula
     0,                        // Next Rebuild (distance-based, not a date)
     0,                        // End of Life (distance-based, not a date)
     row.chassisNumber || '',  // Ch #
-    0,                        // Outing
-    '',                       // Date (the actual date field)
-    0                         // Distance (km)
+    null,                     // Outing — formula (most recent qualifying outing name)
+    null,                     // Date — formula (most recent qualifying outing date)
+    null                      // Distance (km) — formula (most recent qualifying outing distance)
   ];
 }
 
