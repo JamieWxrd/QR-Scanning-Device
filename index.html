@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.16</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.17</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -315,6 +315,7 @@ autoUploadToggle.addEventListener('change', () => {
 const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.ReadWrite.All'];
 let msalInstance = null;
 let driveItemCache = null; // { driveId, itemId } for the resolved Excel file
+let workbookSessionId = null; // persistent Excel session shared by every workbook call
 
 function getRedirectUri(){
   return window.location.href.split('#')[0].split('?')[0];
@@ -403,6 +404,10 @@ msSignoutBtn.addEventListener('click', () => {
   try{
     if(msalInstance) msalInstance.setActiveAccount(null);
   } catch(e){ /* ignore */ }
+  // A workbook session belongs to whichever account created it — clear
+  // it so the next sign-in starts a fresh one instead of reusing a
+  // session tied to the old account's token.
+  workbookSessionId = null;
   updateSignInStatus();
 });
 
@@ -470,6 +475,35 @@ async function resolveDriveItem(){
   return driveItemCache;
 }
 
+// Without a persistent session, every Graph call below opens and closes
+// its own short-lived, independent workbook session — so a write (add
+// row / update chassis) and the recalculate call right after it can end
+// up operating on different in-memory snapshots of the file, leaving
+// dependent formulas (Outing/Date/Distance (km), etc.) showing stale
+// results until something else (like manually re-entering the formula)
+// forces a fresh read. Creating one persistChanges session and reusing
+// its ID on every request keeps everything talking to the same state.
+async function getWorkbookSessionId(){
+  if(workbookSessionId) return workbookSessionId;
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/createSession`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ persistChanges: true })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    throw new Error(`Graph error creating workbook session (HTTP ${res.status}): ` + text.slice(0, 200));
+  }
+  const data = JSON.parse(text);
+  workbookSessionId = data.id;
+  return workbookSessionId;
+}
+
 // Reads every row currently in the SharePoint table (index + full values)
 // so a newly scanned item can be checked against everything already
 // recorded there — not just what's been scanned this session — and, if
@@ -478,8 +512,9 @@ async function resolveDriveItem(){
 async function fetchExistingRows(){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows?$select=index,values`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
   const text = await res.text();
   if(!res.ok){
     throw new Error(`Graph error checking for duplicates (HTTP ${res.status}): ` + text.slice(0, 200));
@@ -518,11 +553,13 @@ async function forceRecalculate(){
   try{
     const token = await getAccessToken();
     const { driveId, itemId } = await resolveDriveItem();
+    const sessionId = await getWorkbookSessionId();
     await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/application/calculate`, {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + token,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'workbook-session-id': sessionId
       },
       body: JSON.stringify({ calculationType: 'FullRebuild' })
     });
@@ -532,6 +569,7 @@ async function forceRecalculate(){
 async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
@@ -549,7 +587,8 @@ async function updateChassisOnRow(rowIndex, newChassis, currentTotalDistance){
     method: 'PATCH',
     headers: {
       Authorization: 'Bearer ' + token,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'workbook-session-id': sessionId
     },
     body: JSON.stringify({ values: [ values ] })
   });
@@ -623,6 +662,7 @@ function buildLifingRow(row){
 async function postRowToExcel(row){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
 
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/add`;
@@ -630,7 +670,8 @@ async function postRowToExcel(row){
     method: 'POST',
     headers: {
       Authorization: 'Bearer ' + token,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'workbook-session-id': sessionId
     },
     body: JSON.stringify({
       values: [ buildLifingRow(row) ]
