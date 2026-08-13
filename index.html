@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.0</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.1</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -275,6 +275,17 @@ const videoWrap = document.getElementById('video-wrap');
 // doesn't change, so it's hardcoded rather than asked for in settings.
 const SP_FILE_LINK = 'https://msportcouk.sharepoint.com/:x:/r/sites/M-SportBarcodingSP/Shared%20Documents/LIFING%20SHEET/RALLY%202%20LIFING%20TEMPLATE.xlsm?d=w237901f8e05e45a898e3ad590feb82a4&csf=1&web=1&e=9CvGu2';
 const SP_TABLE_NAME = 'ScanLog';
+
+// Live formulas for the four columns that go blank/0 once Ch '# is
+// cleared (since they're all filtered by it). Kept here verbatim, as
+// given, so removeChassisFromRow can freeze a row's current results as
+// plain values on removal, and updateChassisOnRow can write these exact
+// formulas back in on a later chassis (re)assignment — restoring them
+// from frozen values to live formulas again for the new period.
+const FORMULA_DISTANCE_SINCE_CHASSIS = `=SUMIFS(Outings[Distance (km)], Outings[Ch '#], [@[Ch '#]], Outings[Date], ">="&[@[On Chassis Since]])`;
+const FORMULA_DATE = `=IF(COUNTIFS(Outings[Ch '#],[@[Ch '#]],Outings[Date],">="&[@[Date Added]])=0,"",MAXIFS(Outings[Date],Outings[Ch '#],[@[Ch '#]],Outings[Date],">="&[@[Date Added]]))`;
+const FORMULA_OUTING = `=IF([@Date]="","",XLOOKUP(1,(Outings[Ch '#]=[@[Ch '#]])*(Outings[Date]=[@Date]),Outings[Outing Name],""))`;
+const FORMULA_DISTANCE_KM = `=IF([@Date]="","",XLOOKUP(1,(Outings[Ch '#]=[@[Ch '#]])*(Outings[Date]=[@Date]),Outings[Distance (km)],""))`;
 
 const MS_CLIENT_ID = '973d7700-c939-4e2f-92f4-f3379ad7c3a5';
 const MS_TENANT_ID = '2358dd77-b9ae-40da-840d-3b64bf577371';
@@ -625,15 +636,24 @@ async function updateChassisOnRow(rowIndex, newChassis){
 
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Full 19-column row, null everywhere except the three cells we're
-  // actually changing — same null-skips-the-cell trick used by
-  // buildLifingRow/rows/add, which keeps every formula (including
-  // Distance Since Changing Chassis) and every other value on the row
-  // untouched.
+  // Full 19-column row, null everywhere except the cells we're actually
+  // changing — the null-skips-the-cell trick used by buildLifingRow/
+  // rows/add keeps every other value on the row untouched.
+  //
+  // Distance Since Changing Chassis/Outing/Date/Distance (km) are
+  // explicitly re-written as their live formulas here (not left null)
+  // because a previous "Remove Chassis" on this same row would have
+  // frozen them into plain values — this restores them to formulas so
+  // the new chassis period actually accumulates going forward. If they
+  // were already live formulas, re-entering the same text is harmless.
   const values = new Array(19).fill(null);
-  values[12] = currentTotalDistance;     // Banked Distance — freshly read Total Distance, right before this write
-  values[14] = fmtDateOnly(new Date());  // On Chassis Since
-  values[15] = newChassis;               // Ch '#
+  values[12] = currentTotalDistance;              // Banked Distance — freshly read Total Distance, right before this write
+  values[13] = FORMULA_DISTANCE_SINCE_CHASSIS;     // Distance Since Changing Chassis — restored to a live formula
+  values[14] = fmtDateOnly(new Date());            // On Chassis Since
+  values[15] = newChassis;                         // Ch '#
+  values[16] = FORMULA_OUTING;                     // Outing — restored to a live formula
+  values[17] = FORMULA_DATE;                       // Date — restored to a live formula
+  values[18] = FORMULA_DISTANCE_KM;                // Distance (km) — restored to a live formula
 
   const res = await fetch(url, {
     method: 'PATCH',
@@ -654,20 +674,40 @@ async function updateChassisOnRow(rowIndex, newChassis){
   return { status: 'confirmed' };
 }
 
-// Clears a part's chassis assignment. Only Ch '# and On Chassis Since
-// are blanked — Banked Distance, Distance Since Changing Chassis, Total
-// Distance, and every other column on the row are left completely
-// untouched (null in the write, same as everywhere else on this row).
+// Clears a part's chassis assignment. Ch '# and On Chassis Since are
+// blanked. Distance Since Changing Chassis, Outing, Date, and Distance
+// (km) are all filtered by Ch '#/On Chassis Since, so once those go
+// blank those four formulas would otherwise recompute to blank/0 — to
+// keep them showing exactly what they showed a moment ago, their
+// current results are read first and written back as plain frozen
+// values instead of formulas. Banked Distance and Total Distance are
+// untouched either way (Total Distance still adds Banked Distance to
+// whatever Distance Since Changing Chassis now holds, frozen or not, so
+// it stays correct).
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
   const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
+  const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
+
+  const rowRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const rowText = await rowRes.text();
+  if(!rowRes.ok){
+    throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
+  }
+  const rowData = JSON.parse(rowText);
+  const current = (rowData.values && rowData.values[0]) || [];
+
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
   const values = new Array(19).fill(null);
-  values[14] = '';  // On Chassis Since
-  values[15] = '';  // Ch '#
+  values[13] = current[13] ?? '';  // Distance Since Changing Chassis — frozen at its last value
+  values[14] = '';                 // On Chassis Since
+  values[15] = '';                 // Ch '#
+  values[16] = current[16] ?? '';  // Outing — frozen
+  values[17] = current[17] ?? '';  // Date — frozen
+  values[18] = current[18] ?? '';  // Distance (km) — frozen
 
   const res = await fetch(url, {
     method: 'PATCH',
