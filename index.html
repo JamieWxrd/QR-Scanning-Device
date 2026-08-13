@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.3</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v5.7</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -497,19 +497,20 @@ function fmtDateOnly(d){
 
 function buildLifingRow(row){
   const id = `${row.itemNumber}/${row.batchNumber}`;
+  const scanDate = fmtDateOnly(new Date());
   return [
     id,                       // ID
     row.partNumber,           // Part No.
     false,                    // Dead
-    fmtDateOnly(new Date()),  // Date Added — only outings on/after this count
+    scanDate,                 // Date Added — only outings on/after this count
     null,                     // Total Distance — formula
-    0,                        // Last Inspection (distance-based, not a date)
+    scanDate,                 // Last Inspection — starts as the scan date (a new part counts as freshly inspected)
     null,                     // Since Inspection — formula
-    0,                        // Next Inspection (distance-based, not a date)
-    0,                        // Last Rebuild (distance-based, not a date)
+    null,                     // Next Inspection — formula (Index interval − Since Inspection)
+    scanDate,                 // Last Rebuild — starts as the scan date (a new part counts as freshly rebuilt)
     null,                     // Since Rebuild — formula
-    0,                        // Next Rebuild (distance-based, not a date)
-    0,                        // End of Life (distance-based, not a date)
+    null,                     // Next Rebuild — formula (Index interval − Since Rebuild)
+    null,                     // End of Life — formula (Index interval − Total Distance)
     row.chassisNumber || '',  // Ch #
     null,                     // Outing — formula (most recent qualifying outing name)
     null,                     // Date — formula (most recent qualifying outing date)
@@ -590,15 +591,17 @@ function fmtTs(d){
 // starting with "W" means the part was made in-house.
 function parseCode(value){
   const slashIdx = value.indexOf('/');
-  if(slashIdx === -1 || slashIdx < 13){
+  if(slashIdx === -1 || slashIdx < 14){
     // Doesn't match the expected format — keep the raw value visible
     // and leave the parsed fields blank rather than guessing.
     return { partNumber: '', itemNumber: '', batchNumber: '' };
   }
   const head = value.slice(0, slashIdx);
   const batchNumber = value.slice(slashIdx + 1);
-  const partNumber = head.slice(0, 10);
-  const itemNumber = head.slice(10, 13);
+  // Part number is now 11 characters — the original 10 plus a trailing
+  // letter — followed by the 3-digit item number.
+  const partNumber = head.slice(0, 11);
+  const itemNumber = head.slice(11, 14);
   return { partNumber, itemNumber, batchNumber };
 }
 
