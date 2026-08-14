@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.21</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.22</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -728,10 +728,18 @@ async function removeChassisFromRow(rowIndex){
     throw new Error(`Graph error copying Last values (HTTP ${copyRes.status}): ` + (data ? JSON.stringify(data.error || data) : copyText).slice(0, 300));
   }
 
-  // Step 2: now blank the chassis.
+  // Step 2: now blank the chassis. Last Outing/Last Date/Last Distance
+  // are re-supplied here (not left as null) as a safeguard — null is
+  // proven to skip untouched cells for formula/calculated columns, but
+  // these are plain columns, and null may not behave the same way for
+  // them. Re-writing the same values we just set in Step 1 guarantees
+  // this write can't blank them back out even if that's what happened.
   const removeValues = new Array(22).fill(null);
-  removeValues[14] = '';  // On Chassis Since
-  removeValues[15] = '';  // Ch '#
+  removeValues[14] = '';                 // On Chassis Since
+  removeValues[15] = '';                 // Ch '#
+  removeValues[19] = outingValue ?? '';  // Last Outing — re-affirmed
+  removeValues[20] = dateValue ?? '';    // Last Date — re-affirmed
+  removeValues[21] = distanceValue ?? '';// Last Distance — re-affirmed
   const removeRes = await fetch(rowUrl, {
     method: 'PATCH',
     headers: {
