@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.15</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.0</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -576,9 +576,119 @@ async function fetchExistingRows(){
       index: r.index,
       id: String(v[0] || '').trim(),
       totalDistance: Number(v[4]) || 0,
-      chassis: String(v[15] || '').trim()
+      dateAdded: v[3] || '',
+      chassis: String(v[15] || '').trim(),
+      currentDate: v[17] || ''
     };
   });
+}
+
+// Parses either a dd/mm/yyyy string (what this app writes), an Excel date
+// serial number, or anything Date() can parse. Returns null if it can't
+// make sense of the value (including blank).
+function parseDateFlexible(val){
+  if(val === null || val === undefined || val === '') return null;
+  if(typeof val === 'number'){
+    const ms = Math.round((val - 25569) * 86400 * 1000); // Excel serial → epoch ms
+    return new Date(ms);
+  }
+  const s = String(val).trim();
+  if(!s) return null;
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m){
+    return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Reads the Outings table directly (Ch #, Date, Outing Name, Distance (km))
+// and returns it as an array of plain row objects. This is the app doing
+// the lookup itself instead of relying on ScanLog's cross-sheet formulas,
+// which Graph's calc engine was not evaluating reliably.
+async function readOutingsTable(token, sessionId, driveId, itemId){
+  async function col(name){
+    const escaped = name.replace(/'/g, "''");
+    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables('Outings')/columns('${encodeURIComponent(escaped)}')/range?$select=values`;
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+    const text = await res.text();
+    if(!res.ok){
+      throw new Error(`HTTP ${res.status} reading Outings[${name}]: ` + text.slice(0, 200));
+    }
+    const data = JSON.parse(text);
+    return data.values || [];
+  }
+  const [chassisCol, dateCol, nameCol, distCol] = await Promise.all([
+    col('Ch #'), col('Date'), col('Outing Name'), col('Distance (km)')
+  ]);
+  const count = Math.max(chassisCol.length, dateCol.length, nameCol.length, distCol.length);
+  const rows = [];
+  for(let i = 1; i < count; i++){
+    rows.push({
+      chassis: String((chassisCol[i] && chassisCol[i][0]) || '').trim(),
+      date: (dateCol[i] && dateCol[i][0]) || '',
+      name: (nameCol[i] && nameCol[i][0]) || '',
+      distance: (distCol[i] && distCol[i][0]) || ''
+    });
+  }
+  return rows;
+}
+
+// The app-side replacement for ScanLog's Outing/Date/Distance (km)
+// formulas. Finds the most recent Outings row for the given chassis
+// (on/after dateAdded, matching the original formula's condition), and
+// only writes it back if it's actually newer than what's currently in
+// ScanLog's Date column — per "if the date in the ScanLog date column is
+// after the date in the outings table for the current chassis then don't
+// change anything."
+async function syncOutingFromOutings(rowIndex, chassis, dateAddedRaw, currentDateRaw){
+  if(!chassis) return { changed: false, reason: 'no_chassis' };
+
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
+
+  const outingsRows = await readOutingsTable(token, sessionId, driveId, itemId);
+  const dateAdded = parseDateFlexible(dateAddedRaw);
+
+  const matching = outingsRows.filter(r => {
+    if(r.chassis !== String(chassis).trim()) return false;
+    const d = parseDateFlexible(r.date);
+    if(!d) return false;
+    if(dateAdded && d < dateAdded) return false;
+    return true;
+  });
+  if(matching.length === 0) return { changed: false, reason: 'no_matching_outings' };
+
+  let best = matching[0];
+  let bestDate = parseDateFlexible(best.date);
+  for(const r of matching){
+    const d = parseDateFlexible(r.date);
+    if(d && (!bestDate || d > bestDate)){ best = r; bestDate = d; }
+  }
+  if(!bestDate) return { changed: false, reason: 'no_valid_date' };
+
+  const currentDate = parseDateFlexible(currentDateRaw);
+  if(currentDate && currentDate >= bestDate){
+    // ScanLog's Date is already caught up (or ahead) — leave untouched.
+    return { changed: false, reason: 'already_current' };
+  }
+
+  const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows/itemAt(index=${rowIndex})`;
+  const values = new Array(22).fill(null);
+  values[16] = best.name;      // Outing
+  values[17] = best.date;      // Date
+  values[18] = best.distance;  // Distance (km)
+  const res = await fetch(rowUrl, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
+    body: JSON.stringify({ values: [ values ] })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    throw new Error(`Graph error writing Outing/Date/Distance (HTTP ${res.status}): ` + text.slice(0, 300));
+  }
+  return { changed: true, outing: best.name, date: best.date, distance: best.distance };
 }
 
 // Updates just the chassis-related cells of an existing row (Ch '#,
@@ -1098,7 +1208,19 @@ async function addRow(value){
       uploadStatus.style.color = '';
       try{
         await updateChassisOnRow(existingRemoteRow.index, newChassis);
-        uploadStatus.textContent = `Chassis updated to ${newChassis} for item ${id}.`;
+        let msg = `Chassis updated to ${newChassis} for item ${id}.`;
+        // New chassis means Date Added didn't change, but re-sync outing
+        // data for the new chassis in case it already has qualifying
+        // outings logged.
+        try{
+          const syncResult = await syncOutingFromOutings(existingRemoteRow.index, newChassis, existingRemoteRow.dateAdded, '');
+          if(syncResult.changed){
+            msg += ` Outing set to "${syncResult.outing}" (${syncResult.date}).`;
+          }
+        } catch(syncErr){
+          msg += ` (Outing sync failed: ${syncErr.message})`;
+        }
+        uploadStatus.textContent = msg;
         uploadStatus.style.color = 'var(--good)';
       } catch(err){
         uploadStatus.textContent = 'Chassis update failed: ' + err.message;
@@ -1109,6 +1231,23 @@ async function addRow(value){
       // confirmed in the live table) — nothing to patch remotely.
       uploadStatus.textContent = 'Item was scanned locally this session — sign in and re-scan once it is on SharePoint to update its chassis.';
       uploadStatus.style.color = 'var(--bad)';
+    } else if(!newChassis && existingRemoteRow){
+      // Chassis left unchanged — still check whether the Outings table has
+      // a newer qualifying outing than what's currently recorded, since
+      // that table can gain rows independently of this app.
+      try{
+        const syncResult = await syncOutingFromOutings(existingRemoteRow.index, existingRemoteRow.chassis, existingRemoteRow.dateAdded, existingRemoteRow.currentDate);
+        if(syncResult.changed){
+          uploadStatus.textContent = `Item ${id} already logged — outing data updated to "${syncResult.outing}" (${syncResult.date}).`;
+          uploadStatus.style.color = 'var(--good)';
+        } else {
+          uploadStatus.textContent = `Item ${id} already logged — chassis and outing data unchanged.`;
+          uploadStatus.style.color = '';
+        }
+      } catch(syncErr){
+        uploadStatus.textContent = `Item ${id} already logged — outing sync failed: ${syncErr.message}`;
+        uploadStatus.style.color = 'var(--bad)';
+      }
     }
     return { ok: false, reason: 'already_logged' };
   }
