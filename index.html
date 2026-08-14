@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.20</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.21</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -671,13 +671,31 @@ async function updateChassisOnRow(rowIndex, newChassis){
   return { status: 'confirmed' };
 }
 
-// Clears a part's chassis assignment. Ch '# and On Chassis Since are
-// blanked, and Outing/Date/Distance (km)'s current results are copied
-// into the plain Last Outing/Last Date/Last Distance columns first —
-// Outing/Date/Distance (km) themselves fall back to those via a simple
-// IF([@[Ch '#]]="",...) once Ch '# is blank, so they keep showing
-// exactly what they showed a moment ago. Banked Distance/Total Distance/
-// everything else on the row is untouched.
+// Reads a single column's values via the same columns/{name}/range
+// endpoint the working test buttons use (proven more reliable here than
+// reading through the row-range endpoint). Index 0 in the response is
+// the header itself, so the data row at table-row-index N is at
+// response index N+1.
+async function readColumnValue(token, sessionId, driveId, itemId, columnName, rowIndex){
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/${encodeURIComponent(columnName)}/range`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const text = await res.text();
+  if(!res.ok){
+    throw new Error(`HTTP ${res.status} reading ${columnName}: ` + text.slice(0, 200));
+  }
+  const data = JSON.parse(text);
+  return data.values && data.values[rowIndex + 1] ? data.values[rowIndex + 1][0] : '';
+}
+
+// Clears a part's chassis assignment, in two deliberate steps:
+//   1. Copy Outing/Date/Distance (km)'s current results into the plain
+//      Last Outing/Last Date/Last Distance columns — done FIRST, before
+//      anything else touches this row.
+//   2. Only after that copy is confirmed written, blank Ch '# and On
+//      Chassis Since. Outing/Date/Distance (km) themselves fall back to
+//      the Last columns via a simple IF([@[Ch '#]]="",...), so they keep
+//      showing exactly what they showed a moment ago. Banked Distance/
+//      Total Distance/everything else on the row is untouched.
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
@@ -685,56 +703,57 @@ async function removeChassisFromRow(rowIndex){
   const table = SP_TABLE_NAME;
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Force a recalculation before reading — otherwise the snapshot we're
-  // about to copy into Last Outing/Last Date/Last Distance could be a
-  // stale one from before the latest Outings edits caught up.
-  await forceRecalculate();
+  // Step 1: copy, before anything else.
+  const outingValue = await readColumnValue(token, sessionId, driveId, itemId, 'Outing', rowIndex);
+  const dateValue = await readColumnValue(token, sessionId, driveId, itemId, 'Date', rowIndex);
+  const distanceValue = await readColumnValue(token, sessionId, driveId, itemId, 'Distance (km)', rowIndex);
 
-  // Reading via the row's range with values AND formulas explicitly
-  // requested lets us confirm exactly what's being captured — values
-  // should be the computed result (e.g. an outing name), formulas
-  // should be the "=IF(...)" text.
-  const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})/range?$select=values,formulas`;
-  const rowRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-  const rowText = await rowRes.text();
-  if(!rowRes.ok){
-    throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
-  }
-  const rowData = JSON.parse(rowText);
-  const current = (rowData.values && rowData.values[0]) || [];
-  const currentFormulas = (rowData.formulas && rowData.formulas[0]) || [];
-
-  const values = new Array(22).fill(null);
-  values[14] = '';                 // On Chassis Since
-  values[15] = '';                 // Ch '#
-  values[19] = current[16] ?? '';  // Last Outing — copied from current Outing result
-  values[20] = current[17] ?? '';  // Last Date — copied from current Date result
-  values[21] = current[18] ?? '';  // Last Distance — copied from current Distance (km) result
-
-  const res = await fetch(rowUrl, {
+  const copyValues = new Array(22).fill(null);
+  copyValues[19] = outingValue ?? '';
+  copyValues[20] = dateValue ?? '';
+  copyValues[21] = distanceValue ?? '';
+  const copyRes = await fetch(rowUrl, {
     method: 'PATCH',
     headers: {
       Authorization: 'Bearer ' + token,
       'Content-Type': 'application/json',
       'workbook-session-id': sessionId
     },
-    body: JSON.stringify({ values: [ values ] })
+    body: JSON.stringify({ values: [ copyValues ] })
   });
-  const text = await res.text();
-  if(!res.ok){
+  const copyText = await copyRes.text();
+  if(!copyRes.ok){
     let data;
-    try{ data = JSON.parse(text); } catch(e){ data = null; }
-    throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+    try{ data = JSON.parse(copyText); } catch(e){ data = null; }
+    throw new Error(`Graph error copying Last values (HTTP ${copyRes.status}): ` + (data ? JSON.stringify(data.error || data) : copyText).slice(0, 300));
   }
+
+  // Step 2: now blank the chassis.
+  const removeValues = new Array(22).fill(null);
+  removeValues[14] = '';  // On Chassis Since
+  removeValues[15] = '';  // Ch '#
+  const removeRes = await fetch(rowUrl, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'workbook-session-id': sessionId
+    },
+    body: JSON.stringify({ values: [ removeValues ] })
+  });
+  const removeText = await removeRes.text();
+  if(!removeRes.ok){
+    let data;
+    try{ data = JSON.parse(removeText); } catch(e){ data = null; }
+    throw new Error(`Graph error removing chassis (HTTP ${removeRes.status}): ` + (data ? JSON.stringify(data.error || data) : removeText).slice(0, 300));
+  }
+
   await forceRecalculate();
   return {
     status: 'confirmed',
-    capturedOuting: values[19],
-    capturedDate: values[20],
-    capturedDistance: values[21],
-    debugOutingValue: current[16],
-    debugOutingFormula: currentFormulas[16],
-    debugChassisValue: current[15]
+    capturedOuting: outingValue,
+    capturedDate: dateValue,
+    capturedDistance: distanceValue
   };
 }
 
@@ -1076,7 +1095,7 @@ async function removeChassisScan(value){
 
   try{
     const result = await removeChassisFromRow(existingRemoteRow.index);
-    const msg = `Chassis removed from item ${id}. Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}" | DEBUG pre-removal Ch '#: "${result.debugChassisValue}", Outing value: "${result.debugOutingValue}", Outing formula: "${result.debugOutingFormula}"`;
+    const msg = `Chassis removed from item ${id}. Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}"`;
     uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--good)';
     camStatus.textContent = msg;
