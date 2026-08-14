@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.22</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.1</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -672,10 +672,9 @@ async function updateChassisOnRow(rowIndex, newChassis){
 }
 
 // Reads a single column's values via the same columns/{name}/range
-// endpoint the working test buttons use (proven more reliable here than
-// reading through the row-range endpoint). Index 0 in the response is
-// the header itself, so the data row at table-row-index N is at
-// response index N+1.
+// endpoint the working test buttons use. Index 0 in the response is the
+// header itself, so the data row at table-row-index N is at response
+// index N+1.
 async function readColumnValue(token, sessionId, driveId, itemId, columnName, rowIndex){
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/${encodeURIComponent(columnName)}/range`;
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
@@ -687,15 +686,9 @@ async function readColumnValue(token, sessionId, driveId, itemId, columnName, ro
   return data.values && data.values[rowIndex + 1] ? data.values[rowIndex + 1][0] : '';
 }
 
-// Clears a part's chassis assignment, in two deliberate steps:
-//   1. Copy Outing/Date/Distance (km)'s current results into the plain
-//      Last Outing/Last Date/Last Distance columns — done FIRST, before
-//      anything else touches this row.
-//   2. Only after that copy is confirmed written, blank Ch '# and On
-//      Chassis Since. Outing/Date/Distance (km) themselves fall back to
-//      the Last columns via a simple IF([@[Ch '#]]="",...), so they keep
-//      showing exactly what they showed a moment ago. Banked Distance/
-//      Total Distance/everything else on the row is untouched.
+// Currently: just copies Outing/Date/Distance (km) into Last Outing/
+// Last Date/Last Distance. Nothing else — Ch '#/On Chassis Since are
+// NOT touched by this yet.
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
@@ -703,66 +696,32 @@ async function removeChassisFromRow(rowIndex){
   const table = SP_TABLE_NAME;
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Step 1: copy, before anything else.
   const outingValue = await readColumnValue(token, sessionId, driveId, itemId, 'Outing', rowIndex);
   const dateValue = await readColumnValue(token, sessionId, driveId, itemId, 'Date', rowIndex);
   const distanceValue = await readColumnValue(token, sessionId, driveId, itemId, 'Distance (km)', rowIndex);
 
-  const copyValues = new Array(22).fill(null);
-  copyValues[19] = outingValue ?? '';
-  copyValues[20] = dateValue ?? '';
-  copyValues[21] = distanceValue ?? '';
-  const copyRes = await fetch(rowUrl, {
+  const values = new Array(22).fill(null);
+  values[19] = outingValue ?? '';   // Last Outing
+  values[20] = dateValue ?? '';     // Last Date
+  values[21] = distanceValue ?? ''; // Last Distance
+
+  const res = await fetch(rowUrl, {
     method: 'PATCH',
     headers: {
       Authorization: 'Bearer ' + token,
       'Content-Type': 'application/json',
       'workbook-session-id': sessionId
     },
-    body: JSON.stringify({ values: [ copyValues ] })
+    body: JSON.stringify({ values: [ values ] })
   });
-  const copyText = await copyRes.text();
-  if(!copyRes.ok){
+  const text = await res.text();
+  if(!res.ok){
     let data;
-    try{ data = JSON.parse(copyText); } catch(e){ data = null; }
-    throw new Error(`Graph error copying Last values (HTTP ${copyRes.status}): ` + (data ? JSON.stringify(data.error || data) : copyText).slice(0, 300));
+    try{ data = JSON.parse(text); } catch(e){ data = null; }
+    throw new Error(`Graph error copying Last values (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
 
-  // Step 2: now blank the chassis. Last Outing/Last Date/Last Distance
-  // are re-supplied here (not left as null) as a safeguard — null is
-  // proven to skip untouched cells for formula/calculated columns, but
-  // these are plain columns, and null may not behave the same way for
-  // them. Re-writing the same values we just set in Step 1 guarantees
-  // this write can't blank them back out even if that's what happened.
-  const removeValues = new Array(22).fill(null);
-  removeValues[14] = '';                 // On Chassis Since
-  removeValues[15] = '';                 // Ch '#
-  removeValues[19] = outingValue ?? '';  // Last Outing — re-affirmed
-  removeValues[20] = dateValue ?? '';    // Last Date — re-affirmed
-  removeValues[21] = distanceValue ?? '';// Last Distance — re-affirmed
-  const removeRes = await fetch(rowUrl, {
-    method: 'PATCH',
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'Content-Type': 'application/json',
-      'workbook-session-id': sessionId
-    },
-    body: JSON.stringify({ values: [ removeValues ] })
-  });
-  const removeText = await removeRes.text();
-  if(!removeRes.ok){
-    let data;
-    try{ data = JSON.parse(removeText); } catch(e){ data = null; }
-    throw new Error(`Graph error removing chassis (HTTP ${removeRes.status}): ` + (data ? JSON.stringify(data.error || data) : removeText).slice(0, 300));
-  }
-
-  await forceRecalculate();
-  return {
-    status: 'confirmed',
-    capturedOuting: outingValue,
-    capturedDate: dateValue,
-    capturedDistance: distanceValue
-  };
+  return { status: 'confirmed', capturedOuting: outingValue, capturedDate: dateValue, capturedDistance: distanceValue };
 }
 
 // Appends one row to the named Table in the SharePoint Excel workbook via
