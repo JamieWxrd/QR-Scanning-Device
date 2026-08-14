@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.1</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.2</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -133,6 +133,15 @@
   </div>
 </div>
 
+<div id="not-found-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:199;"></div>
+<div class="card" id="not-found-modal" style="display:none; position:fixed; top:30%; left:16px; right:16px; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+  <h2><span>Not Found</span></h2>
+  <p class="sub" id="not-found-message" style="margin:0;">Item is not in the database.</p>
+  <div class="row" style="margin-top:12px;">
+    <button class="btn-primary" id="not-found-ok-btn">OK</button>
+  </div>
+</div>
+
 <div id="settings-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99;"></div>
 <div class="card" id="settings-panel" style="display:none; position:fixed; top:12px; left:16px; right:16px; max-height:90vh; overflow-y:auto; z-index:100; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
   <h2>
@@ -155,15 +164,6 @@
   </div>
   <div class="row">
     <button class="btn-secondary" id="test-connection-btn">Test Connection</button>
-  </div>
-  <div class="row" style="margin-top:6px;">
-    <button class="btn-secondary" id="test-read-outing-btn">Test: Read First ID</button>
-  </div>
-  <div class="row" style="margin-top:6px;">
-    <button class="btn-secondary" id="test-copy-outing-btn">Test: Copy Outing to Last Outing</button>
-  </div>
-  <div class="row" style="margin-top:6px;">
-    <button class="btn-secondary" id="test-read-outing-recalc-btn">Test: Recalc then Read First Outing</button>
   </div>
   <div class="status" id="upload-status" style="margin-top:8px;"></div>
 </div>
@@ -269,6 +269,30 @@ function promptChassisUpdate(id, currentChassis){
     duplicateOkBtn.addEventListener('click', onUpdate);
     duplicateSkipBtn.addEventListener('click', onSkip);
     duplicateChassisInput.addEventListener('keydown', onKeydown);
+  });
+}
+
+const notFoundBackdrop = document.getElementById('not-found-backdrop');
+const notFoundModal = document.getElementById('not-found-modal');
+const notFoundMessage = document.getElementById('not-found-message');
+const notFoundOkBtn = document.getElementById('not-found-ok-btn');
+
+// Small popup shown in Remove Part mode when a scanned item isn't in the
+// database — nothing to remove a chassis from.
+function showNotFoundPopup(id){
+  return new Promise(resolve => {
+    notFoundMessage.textContent = `Item ${id} is not in the database.`;
+    notFoundModal.style.display = 'block';
+    notFoundBackdrop.style.display = 'block';
+
+    function finish(){
+      notFoundModal.style.display = 'none';
+      notFoundBackdrop.style.display = 'none';
+      notFoundOkBtn.removeEventListener('click', finish);
+      setTimeout(() => manualInput.focus(), 50);
+      resolve();
+    }
+    notFoundOkBtn.addEventListener('click', finish);
   });
 }
 
@@ -955,182 +979,6 @@ document.getElementById('test-connection-btn').addEventListener('click', async (
   }
 });
 
-// Pure diagnostic — reads the Outing column directly, no chassis logic
-// involved at all, so we can see exactly what Graph is serving for that
-// cell in isolation.
-document.getElementById('test-read-outing-btn').addEventListener('click', async () => {
-  uploadStatus.textContent = 'Reading...';
-  uploadStatus.style.color = '';
-  try{
-    const token = await getAccessToken();
-    const { driveId, itemId } = await resolveDriveItem();
-    const sessionId = await getWorkbookSessionId();
-    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/ID/range`;
-    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-    const text = await res.text();
-    if(!res.ok){
-      throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
-    }
-    const data = JSON.parse(text);
-    // This range includes the header row at index 0 (that's the "ID"
-    // header text itself) — the first real data row is index 1.
-    const firstValue = data.values && data.values[1] ? data.values[1][0] : undefined;
-    uploadStatus.textContent = `First data row of ID column: "${firstValue}"`;
-    uploadStatus.style.color = 'var(--good)';
-  } catch(err){
-    uploadStatus.textContent = 'Test failed: ' + err.message;
-    uploadStatus.style.color = 'var(--bad)';
-  }
-});
-
-// Pure diagnostic — reads the first data row's Outing value, then writes
-// it straight into that same row's Last Outing cell via the table-row
-// API. No chassis logic involved at all, so this isolates whether the
-// read+write mechanism itself works, independent of the rest of the
-// remove-chassis flow.
-document.getElementById('test-copy-outing-btn').addEventListener('click', async () => {
-  uploadStatus.textContent = 'Copying...';
-  uploadStatus.style.color = '';
-  try{
-    const token = await getAccessToken();
-    const { driveId, itemId } = await resolveDriveItem();
-    const sessionId = await getWorkbookSessionId();
-
-    const columnUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range`;
-    const columnRes = await fetch(columnUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-    const columnText = await columnRes.text();
-    if(!columnRes.ok){
-      throw new Error(`HTTP ${columnRes.status} reading Outing: ` + columnText.slice(0, 200));
-    }
-    const columnData = JSON.parse(columnText);
-    // Index 0 is the "Outing" header itself — index 1 is the first data row.
-    const outingValue = columnData.values && columnData.values[1] ? columnData.values[1][0] : '';
-
-    const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows/itemAt(index=0)`;
-    const values = new Array(22).fill(null);
-    values[19] = outingValue;  // Last Outing
-    const writeRes = await fetch(rowUrl, {
-      method: 'PATCH',
-      headers: {
-        Authorization: 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'workbook-session-id': sessionId
-      },
-      body: JSON.stringify({ values: [ values ] })
-    });
-    const writeText = await writeRes.text();
-    if(!writeRes.ok){
-      throw new Error(`HTTP ${writeRes.status} writing Last Outing: ` + writeText.slice(0, 200));
-    }
-    uploadStatus.textContent = `Copied "${outingValue}" from Outing into Last Outing on row 1. Check Excel.`;
-    uploadStatus.style.color = 'var(--good)';
-  } catch(err){
-    uploadStatus.textContent = 'Test failed: ' + err.message;
-    uploadStatus.style.color = 'var(--bad)';
-  }
-});
-
-document.getElementById('test-read-outing-recalc-btn').addEventListener('click', async () => {
-  uploadStatus.textContent = 'Recalculating...';
-  uploadStatus.style.color = '';
-  try{
-    // Close and reopen the workbook session before reading, in case the
-    // cached persistent session is holding a stale in-memory snapshot of
-    // the Outings table (Date's formula depends on Outings via
-    // COUNTIFS/MAXIFS) from whenever the session was first opened.
-    const token = await getAccessToken();
-    const { driveId, itemId } = await resolveDriveItem();
-
-    if(workbookSessionId){
-      try{
-        await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/closeSession`, {
-          method: 'POST',
-          headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': workbookSessionId }
-        });
-      } catch(e){ /* best-effort close */ }
-      workbookSessionId = null;
-    }
-    const sessionId = await getWorkbookSessionId();
-
-    const calcUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/application/calculate`;
-    const calcRes = await fetch(calcUrl, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
-      body: JSON.stringify({ calculationType: 'FullRebuild' })
-    });
-    const calcText = await calcRes.text();
-    if(!calcRes.ok){
-      throw new Error(`Recalculate call failed (HTTP ${calcRes.status}): ` + calcText.slice(0, 300));
-    }
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    // Outing's formula short-circuits to "" whenever [@Date] is blank, and
-    // Date is itself a formula — so read Ch '#, Date, and Outing together
-    // to see exactly where in the chain the value goes blank inside
-    // Graph's calc engine.
-    // Plain "/columns/Name" path segments only work for names with no
-    // special characters. "Ch '#" has both an apostrophe and a "#", so it
-    // needs the OData bracket-key form: columns('Name'), with any internal
-    // apostrophe doubled per OData escaping rules.
-    function columnSegment(colName){
-      const escaped = colName.replace(/'/g, "''");
-      return `columns('${encodeURIComponent(escaped)}')`;
-    }
-    async function readCol(tableName, colName){
-      const colUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(tableName)}/${columnSegment(colName)}/range?$select=values,text,formulas`;
-      const colRes = await fetch(colUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-      const colText = await colRes.text();
-      if(!colRes.ok){
-        throw new Error(`HTTP ${colRes.status} reading ${tableName}[${colName}]: ` + colText.slice(0, 200));
-      }
-      const colData = JSON.parse(colText);
-      return colData;
-    }
-
-    const chassis = await readCol(SP_TABLE_NAME, 'Ch #');
-    const date = await readCol(SP_TABLE_NAME, 'Date');
-    const outing = await readCol(SP_TABLE_NAME, 'Outing');
-    // Total Distance is also a formula, but it only ever references other
-    // cells within ScanLog itself — no dependency on the Outings sheet.
-    // If this reads correctly while Date still comes back blank, that
-    // isolates the problem to formulas that reach into Outings.
-    const totalDistance = await readCol(SP_TABLE_NAME, 'Total Distance');
-
-    const cv = (d, i) => d.values && d.values[i] ? d.values[i][0] : undefined;
-    const ct = (d, i) => d.text && d.text[i] ? d.text[i][0] : undefined;
-    const cf = (d, i) => d.formulas && d.formulas[i] ? d.formulas[i][0] : undefined;
-
-    // Now read the Outings table directly, bypassing ScanLog's formulas
-    // entirely, to see whether Graph can actually see the outing rows for
-    // Ch '# 100 — this tells us whether the underlying data is stale/
-    // missing on Graph's side, or whether the data is fine and it's
-    // specifically the cross-sheet formula evaluation that's broken.
-    const outingsChassis = await readCol('Outings', "Ch #");
-    const outingsDate = await readCol('Outings', 'Date');
-    const outingsName = await readCol('Outings', 'Outing Name');
-    let outingsRowsHtml = '';
-    const rowCount = outingsChassis.values ? outingsChassis.values.length : 0;
-    for(let i = 1; i < rowCount; i++){
-      const chVal = cv(outingsChassis, i);
-      if(String(chVal).trim() === '100'){
-        outingsRowsHtml += `row ${i}: Ch#=${chVal} Date=${cv(outingsDate, i)} Name=${cv(outingsName, i)}<br>`;
-      }
-    }
-    if(!outingsRowsHtml) outingsRowsHtml = '(no Outings rows found with Ch # = 100)';
-
-    uploadStatus.innerHTML =
-      `Ch #: values="${cv(chassis,1)}" text="${ct(chassis,1)}"<br>` +
-      `Date: values="${cv(date,1)}" text="${ct(date,1)}" formula=${cf(date,1)}<br>` +
-      `Outing: values="${cv(outing,1)}" text="${ct(outing,1)}" formula=${cf(outing,1)}<br>` +
-      `Total Distance: values="${cv(totalDistance,1)}" text="${ct(totalDistance,1)}" formula=${cf(totalDistance,1)}<br>` +
-      `<br>Outings table rows for Ch #=100 (${rowCount - 1} total rows):<br>` + outingsRowsHtml;
-    uploadStatus.style.color = 'var(--good)';
-  } catch(err){
-    uploadStatus.textContent = 'Test failed: ' + err.message;
-    uploadStatus.style.color = 'var(--bad)';
-  }
-});
-
 let rows = [];       // {ts, value}
 let stream = null;
 let scanning = false;
@@ -1294,10 +1142,9 @@ async function removeChassisScan(value){
 
   if(!existingRemoteRow){
     if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
-    const msg = `Item ${id} was not found in the database — nothing to remove.`;
-    uploadStatus.textContent = msg;
-    uploadStatus.style.color = 'var(--bad)';
-    camStatus.textContent = msg;
+    uploadStatus.textContent = '';
+    camStatus.textContent = '';
+    await showNotFoundPopup(id);
     return { ok: false, reason: 'not_found' };
   }
 
