@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.10</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.11</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -930,12 +930,22 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
   uploadStatus.textContent = 'Recalculating...';
   uploadStatus.style.color = '';
   try{
-    // Same read as "Test: Read First Outing" used to do, but this time we
-    // call the calculate endpoint directly (not via forceRecalculate,
-    // which silently swallows errors) so we can actually see whether the
-    // recalculation itself is succeeding before we read.
+    // Close and reopen the workbook session before reading, in case the
+    // cached persistent session is holding a stale in-memory snapshot of
+    // the Outings table (Date's formula depends on Outings via
+    // COUNTIFS/MAXIFS) from whenever the session was first opened.
     const token = await getAccessToken();
     const { driveId, itemId } = await resolveDriveItem();
+
+    if(workbookSessionId){
+      try{
+        await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/closeSession`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': workbookSessionId }
+        });
+      } catch(e){ /* best-effort close */ }
+      workbookSessionId = null;
+    }
     const sessionId = await getWorkbookSessionId();
 
     const calcUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/application/calculate`;
