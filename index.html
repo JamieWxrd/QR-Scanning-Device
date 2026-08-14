@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.3</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -1418,15 +1418,20 @@ async function getCellAddressForTableColumn(token, sessionId, driveId, itemId, c
 // the given text. Best-effort — a failure here shouldn't undo the actual
 // date write that already succeeded, so callers should treat this as
 // non-fatal and just report it.
+//
+// NOTE: creating a comment (POST /workbook/comments) only exists in the
+// Graph *beta* API — it 404/400s under v1.0, which the rest of this app
+// uses. The endpoint is also POST /workbook/comments directly, not
+// /workbook/comments/add.
 async function addCellComment(cellAddress, content){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
   const sessionId = await getWorkbookSessionId();
-  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/comments/add`;
+  const url = `https://graph.microsoft.com/beta/drives/${driveId}/items/${itemId}/workbook/comments`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
-    body: JSON.stringify({ cellAddress, content, contentType: 'Plain' })
+    body: JSON.stringify({ cellAddress, content, contentType: 'plain' })
   });
   const text = await res.text();
   if(!res.ok){
