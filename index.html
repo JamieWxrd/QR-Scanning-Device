@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.5</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.6</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -702,7 +702,7 @@ async function syncOutingFromOutings(rowIndex, chassis, cutoffDateRaw, currentDa
   }
 
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows/itemAt(index=${rowIndex})`;
-  const values = new Array(22).fill(null);
+  const values = new Array(19).fill(null);
   values[16] = best.name;      // Outing
   values[17] = best.date;      // Date
   values[18] = best.distance;  // Distance (km)
@@ -776,21 +776,16 @@ async function updateChassisOnRow(rowIndex, newChassis){
 
   const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Full 22-column ScanLog row, null everywhere except the cells we're
+  // Full 19-column ScanLog row, null everywhere except the cells we're
   // actually changing — the null-skips-the-cell trick used by
-  // buildLifingRow/rows/add keeps every other value on the row
-  // untouched. Distance Since Changing Chassis/Outing/Date/Distance (km)
-  // are live formulas the app never needs to touch, so they're just
-  // left null like everything else. Last Outing/Last Date/Last Distance
-  // are cleared here since they're no longer relevant once a live
-  // chassis is assigned again.
-  const values = new Array(22).fill(null);
+  // buildLifingRow/rows/add keeps every other value on the row untouched.
+  // Distance Since Changing Chassis is still a live formula the app never
+  // touches; Outing/Date/Distance (km) are app-owned plain values handled
+  // separately by syncOutingFromOutings.
+  const values = new Array(19).fill(null);
   values[12] = currentTotalDistance;     // Banked Distance — freshly read Total Distance, right before this write
   values[14] = fmtDateOnly(new Date());  // On Chassis Since
   values[15] = newChassis;               // Ch '#
-  values[19] = '';                       // Last Outing — no longer needed
-  values[20] = '';                       // Last Date — no longer needed
-  values[21] = '';                       // Last Distance — no longer needed
 
   const res = await fetch(url, {
     method: 'PATCH',
@@ -861,7 +856,7 @@ async function removeChassisFromRow(rowIndex){
   const table = SP_TABLE_NAME;
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  const values = new Array(22).fill(null);
+  const values = new Array(19).fill(null);
   values[14] = '';  // On Chassis Since
   values[15] = '';  // Ch '#
 
@@ -935,12 +930,9 @@ function buildLifingRow(row){
     null,                     // Distance Since Changing Chassis — formula
     scanDate,                 // On Chassis Since — date the current chassis took effect
     row.chassisNumber || '',  // Ch '#
-    null,                     // Outing — formula (most recent qualifying outing name)
-    null,                     // Date — formula (most recent qualifying outing date)
-    null,                     // Distance (km) — formula (most recent qualifying outing distance)
-    null,                     // Last Outing — plain value, blank until a chassis is ever removed
-    null,                     // Last Date — plain value, blank until a chassis is ever removed
-    null                      // Last Distance — plain value, blank until a chassis is ever removed
+    null,                     // Outing — app-owned plain value, filled in by syncOutingFromOutings once qualifying
+    null,                     // Date — app-owned plain value
+    null                      // Distance (km) — app-owned plain value
   ];
 }
 
