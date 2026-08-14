@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.18</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.19</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -872,8 +872,10 @@ document.getElementById('test-read-outing-btn').addEventListener('click', async 
       throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
     }
     const data = JSON.parse(text);
-    const firstValue = data.values && data.values[0] ? data.values[0][0] : undefined;
-    uploadStatus.textContent = `First row of Outing column: "${firstValue}"`;
+    // This range includes the header row at index 0 (that's the "Outing"
+    // header text itself) — the first real data row is index 1.
+    const firstValue = data.values && data.values[1] ? data.values[1][0] : undefined;
+    uploadStatus.textContent = `First data row of Outing column: "${firstValue}"`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
