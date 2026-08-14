@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.15</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.16</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -687,18 +687,35 @@ async function removeChassisFromRow(rowIndex){
   // Reading via the row's range with values AND formulas explicitly
   // requested lets us confirm exactly what's being captured — values
   // should be the computed result (e.g. an outing name), formulas
-  // should be the "=IF(...)" text. If values ever came back looking
-  // like formula text, that'd mean something is very wrong with how
-  // Graph is answering this request.
+  // should be the "=IF(...)" text.
+  //
+  // A single read right after forceRecalculate() has proven unreliable
+  // — Graph can still serve a stale snapshot even after the recalc call
+  // returns and a fixed delay passes. So instead of trusting one read,
+  // this retries a few times: if Ch '# is genuinely populated (a live
+  // chassis) but Outing/Date/Distance (km) all come back blank anyway,
+  // that's almost certainly staleness rather than a real "no outing
+  // yet" case, so it waits and reads again before giving up.
   const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})/range?$select=values,formulas`;
-  const rowRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-  const rowText = await rowRes.text();
-  if(!rowRes.ok){
-    throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
+  let current = [];
+  let currentFormulas = [];
+  for(let attempt = 0; attempt < 5; attempt++){
+    const rowRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+    const rowText = await rowRes.text();
+    if(!rowRes.ok){
+      throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
+    }
+    const rowData = JSON.parse(rowText);
+    current = (rowData.values && rowData.values[0]) || [];
+    currentFormulas = (rowData.formulas && rowData.formulas[0]) || [];
+
+    const chassisIsLive = String(current[15] ?? '').trim() !== '';
+    const gotSomething = [16, 17, 18].some(i => String(current[i] ?? '').trim() !== '');
+    if(!chassisIsLive || gotSomething) break;  // either nothing to wait for, or we got real data
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await forceRecalculate();
   }
-  const rowData = JSON.parse(rowText);
-  const current = (rowData.values && rowData.values[0]) || [];
-  const currentFormulas = (rowData.formulas && rowData.formulas[0]) || [];
 
   const values = new Array(22).fill(null);
   values[14] = '';                 // On Chassis Since
