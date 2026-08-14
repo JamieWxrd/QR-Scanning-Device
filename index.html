@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.12</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.13</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -972,35 +972,54 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
       const escaped = colName.replace(/'/g, "''");
       return `columns('${encodeURIComponent(escaped)}')`;
     }
-    async function readCol(colName){
-      const colUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/${columnSegment(colName)}/range?$select=values,text,formulas`;
+    async function readCol(tableName, colName){
+      const colUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(tableName)}/${columnSegment(colName)}/range?$select=values,text,formulas`;
       const colRes = await fetch(colUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
       const colText = await colRes.text();
       if(!colRes.ok){
-        throw new Error(`HTTP ${colRes.status} reading ${colName}: ` + colText.slice(0, 200));
+        throw new Error(`HTTP ${colRes.status} reading ${tableName}[${colName}]: ` + colText.slice(0, 200));
       }
       const colData = JSON.parse(colText);
-      return {
-        value: colData.values && colData.values[1] ? colData.values[1][0] : undefined,
-        text: colData.text && colData.text[1] ? colData.text[1][0] : undefined,
-        formula: colData.formulas && colData.formulas[1] ? colData.formulas[1][0] : undefined
-      };
+      return colData;
     }
 
-    const chassis = await readCol('Ch #');
-    const date = await readCol('Date');
-    const outing = await readCol('Outing');
+    const chassis = await readCol(SP_TABLE_NAME, 'Ch #');
+    const date = await readCol(SP_TABLE_NAME, 'Date');
+    const outing = await readCol(SP_TABLE_NAME, 'Outing');
     // Total Distance is also a formula, but it only ever references other
     // cells within ScanLog itself — no dependency on the Outings sheet.
     // If this reads correctly while Date still comes back blank, that
     // isolates the problem to formulas that reach into Outings.
-    const totalDistance = await readCol('Total Distance');
+    const totalDistance = await readCol(SP_TABLE_NAME, 'Total Distance');
+
+    const cv = (d, i) => d.values && d.values[i] ? d.values[i][0] : undefined;
+    const ct = (d, i) => d.text && d.text[i] ? d.text[i][0] : undefined;
+    const cf = (d, i) => d.formulas && d.formulas[i] ? d.formulas[i][0] : undefined;
+
+    // Now read the Outings table directly, bypassing ScanLog's formulas
+    // entirely, to see whether Graph can actually see the outing rows for
+    // Ch '# 100 — this tells us whether the underlying data is stale/
+    // missing on Graph's side, or whether the data is fine and it's
+    // specifically the cross-sheet formula evaluation that's broken.
+    const outingsChassis = await readCol('Outings', "Ch '#");
+    const outingsDate = await readCol('Outings', 'Date');
+    const outingsName = await readCol('Outings', 'Outing Name');
+    let outingsRowsHtml = '';
+    const rowCount = outingsChassis.values ? outingsChassis.values.length : 0;
+    for(let i = 1; i < rowCount; i++){
+      const chVal = cv(outingsChassis, i);
+      if(String(chVal).trim() === '100'){
+        outingsRowsHtml += `row ${i}: Ch#=${chVal} Date=${cv(outingsDate, i)} Name=${cv(outingsName, i)}<br>`;
+      }
+    }
+    if(!outingsRowsHtml) outingsRowsHtml = '(no Outings rows found with Ch # = 100)';
 
     uploadStatus.innerHTML =
-      `Ch #: values="${chassis.value}" text="${chassis.text}"<br>` +
-      `Date: values="${date.value}" text="${date.text}" formula=${date.formula}<br>` +
-      `Outing: values="${outing.value}" text="${outing.text}" formula=${outing.formula}<br>` +
-      `Total Distance: values="${totalDistance.value}" text="${totalDistance.text}" formula=${totalDistance.formula}`;
+      `Ch #: values="${cv(chassis,1)}" text="${ct(chassis,1)}"<br>` +
+      `Date: values="${cv(date,1)}" text="${ct(date,1)}" formula=${cf(date,1)}<br>` +
+      `Outing: values="${cv(outing,1)}" text="${ct(outing,1)}" formula=${cf(outing,1)}<br>` +
+      `Total Distance: values="${cv(totalDistance,1)}" text="${ct(totalDistance,1)}" formula=${cf(totalDistance,1)}<br>` +
+      `<br>Outings table rows for Ch #=100 (${rowCount - 1} total rows):<br>` + outingsRowsHtml;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
