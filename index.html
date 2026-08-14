@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.16</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.18</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -155,6 +155,9 @@
   </div>
   <div class="row">
     <button class="btn-secondary" id="test-connection-btn">Test Connection</button>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button class="btn-secondary" id="test-read-outing-btn">Test: Read First Outing</button>
   </div>
   <div class="status" id="upload-status" style="margin-top:8px;"></div>
 </div>
@@ -688,34 +691,15 @@ async function removeChassisFromRow(rowIndex){
   // requested lets us confirm exactly what's being captured — values
   // should be the computed result (e.g. an outing name), formulas
   // should be the "=IF(...)" text.
-  //
-  // A single read right after forceRecalculate() has proven unreliable
-  // — Graph can still serve a stale snapshot even after the recalc call
-  // returns and a fixed delay passes. So instead of trusting one read,
-  // this retries a few times: if Ch '# is genuinely populated (a live
-  // chassis) but Outing/Date/Distance (km) all come back blank anyway,
-  // that's almost certainly staleness rather than a real "no outing
-  // yet" case, so it waits and reads again before giving up.
   const rangeUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})/range?$select=values,formulas`;
-  let current = [];
-  let currentFormulas = [];
-  for(let attempt = 0; attempt < 5; attempt++){
-    const rowRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-    const rowText = await rowRes.text();
-    if(!rowRes.ok){
-      throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
-    }
-    const rowData = JSON.parse(rowText);
-    current = (rowData.values && rowData.values[0]) || [];
-    currentFormulas = (rowData.formulas && rowData.formulas[0]) || [];
-
-    const chassisIsLive = String(current[15] ?? '').trim() !== '';
-    const gotSomething = [16, 17, 18].some(i => String(current[i] ?? '').trim() !== '');
-    if(!chassisIsLive || gotSomething) break;  // either nothing to wait for, or we got real data
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await forceRecalculate();
+  const rowRes = await fetch(rangeUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const rowText = await rowRes.text();
+  if(!rowRes.ok){
+    throw new Error(`Graph error reading current row (HTTP ${rowRes.status}): ` + rowText.slice(0, 200));
   }
+  const rowData = JSON.parse(rowText);
+  const current = (rowData.values && rowData.values[0]) || [];
+  const currentFormulas = (rowData.formulas && rowData.formulas[0]) || [];
 
   const values = new Array(22).fill(null);
   values[14] = '';                 // On Chassis Since
@@ -864,6 +848,32 @@ document.getElementById('test-connection-btn').addEventListener('click', async (
       batchNumber: 'TEST'
     });
     uploadStatus.textContent = 'Test row confirmed — check your Excel table for a TESTPART01 row.';
+    uploadStatus.style.color = 'var(--good)';
+  } catch(err){
+    uploadStatus.textContent = 'Test failed: ' + err.message;
+    uploadStatus.style.color = 'var(--bad)';
+  }
+});
+
+// Pure diagnostic — reads the Outing column directly, no chassis logic
+// involved at all, so we can see exactly what Graph is serving for that
+// cell in isolation.
+document.getElementById('test-read-outing-btn').addEventListener('click', async () => {
+  uploadStatus.textContent = 'Reading...';
+  uploadStatus.style.color = '';
+  try{
+    const token = await getAccessToken();
+    const { driveId, itemId } = await resolveDriveItem();
+    const sessionId = await getWorkbookSessionId();
+    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range`;
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+    const text = await res.text();
+    if(!res.ok){
+      throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
+    }
+    const data = JSON.parse(text);
+    const firstValue = data.values && data.values[0] ? data.values[0][0] : undefined;
+    uploadStatus.textContent = `First row of Outing column: "${firstValue}"`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
