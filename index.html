@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.4</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -601,6 +601,7 @@ async function fetchExistingRows(){
       id: String(v[0] || '').trim(),
       totalDistance: Number(v[4]) || 0,
       dateAdded: v[3] || '',
+      onChassisSince: v[14] || '',
       chassis: String(v[15] || '').trim(),
       currentDate: v[17] || ''
     };
@@ -659,13 +660,15 @@ async function readOutingsTable(token, sessionId, driveId, itemId){
 }
 
 // The app-side replacement for ScanLog's Outing/Date/Distance (km)
-// formulas. Finds the most recent Outings row for the given chassis
-// (on/after dateAdded, matching the original formula's condition), and
-// only writes it back if it's actually newer than what's currently in
-// ScanLog's Date column — per "if the date in the ScanLog date column is
-// after the date in the outings table for the current chassis then don't
-// change anything."
-async function syncOutingFromOutings(rowIndex, chassis, dateAddedRaw, currentDateRaw){
+// formulas. Finds the most recent Outings row for the given chassis, but
+// only counts outings on/after cutoffDateRaw — this should be the row's
+// "On Chassis Since" date, NOT Date Added, so that when a part switches
+// chassis it doesn't pick up outings that chassis did before this part
+// was ever mounted on it. Only writes back if the found outing is
+// actually newer than what's currently in ScanLog's Date column — per
+// "if the date in the ScanLog date column is after the date in the
+// outings table for the current chassis then don't change anything."
+async function syncOutingFromOutings(rowIndex, chassis, cutoffDateRaw, currentDateRaw){
   if(!chassis) return { changed: false, reason: 'no_chassis' };
 
   const token = await getAccessToken();
@@ -673,13 +676,13 @@ async function syncOutingFromOutings(rowIndex, chassis, dateAddedRaw, currentDat
   const sessionId = await getWorkbookSessionId();
 
   const outingsRows = await readOutingsTable(token, sessionId, driveId, itemId);
-  const dateAdded = parseDateFlexible(dateAddedRaw);
+  const cutoffDate = parseDateFlexible(cutoffDateRaw);
 
   const matching = outingsRows.filter(r => {
     if(r.chassis !== String(chassis).trim()) return false;
     const d = parseDateFlexible(r.date);
     if(!d) return false;
-    if(dateAdded && d < dateAdded) return false;
+    if(cutoffDate && d < cutoffDate) return false;
     return true;
   });
   if(matching.length === 0) return { changed: false, reason: 'no_matching_outings' };
@@ -805,7 +808,29 @@ async function updateChassisOnRow(rowIndex, newChassis){
     throw new Error(`Graph error updating chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
   await forceRecalculate();
-  return { status: 'confirmed' };
+
+  // Verify the write actually stuck — read the row straight back and
+  // compare against what we intended, rather than trusting the PATCH's
+  // HTTP 200 alone.
+  const verifyRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const verifyText = await verifyRes.text();
+  if(!verifyRes.ok){
+    throw new Error(`Graph error verifying chassis update (HTTP ${verifyRes.status}): ` + verifyText.slice(0, 200));
+  }
+  const verifyData = JSON.parse(verifyText);
+  const verifyRow = verifyData.values && verifyData.values[0] ? verifyData.values[0] : [];
+  const actualChassis = String(verifyRow[15] || '').trim();
+  const actualOnChassisSince = String(verifyRow[14] || '').trim();
+  const expectedOnChassisSince = values[14];
+
+  if(actualChassis !== String(newChassis).trim()){
+    throw new Error(`Chassis update did not stick — expected Ch # "${newChassis}", found "${actualChassis}" after write.`);
+  }
+  if(actualOnChassisSince !== expectedOnChassisSince){
+    throw new Error(`On Chassis Since did not stick — expected "${expectedOnChassisSince}", found "${actualOnChassisSince}" after write.`);
+  }
+
+  return { status: 'confirmed', chassis: actualChassis, onChassisSince: actualOnChassisSince };
 }
 
 // Reads a single column's values via the same columns/{name}/range
@@ -1049,13 +1074,16 @@ async function addRow(value){
       uploadStatus.textContent = 'Updating chassis...';
       uploadStatus.style.color = '';
       try{
-        await updateChassisOnRow(existingRemoteRow.index, newChassis);
-        let msg = `Chassis updated to ${newChassis} for item ${id}.`;
-        // New chassis means Date Added didn't change, but re-sync outing
-        // data for the new chassis in case it already has qualifying
-        // outings logged.
+        const chassisResult = await updateChassisOnRow(existingRemoteRow.index, newChassis);
+        let msg = `Chassis updated to ${chassisResult.chassis} (On Chassis Since: ${chassisResult.onChassisSince}) for item ${id} — verified.`;
+        // updateChassisOnRow just set On Chassis Since to today, so only
+        // count outings on/after today for this new chassis — otherwise
+        // an outing that chassis did before this part was ever mounted on
+        // it could get pulled in. currentDateRaw is passed as '' since
+        // whatever Date was there belonged to the previous chassis.
         try{
-          const syncResult = await syncOutingFromOutings(existingRemoteRow.index, newChassis, existingRemoteRow.dateAdded, '');
+          const todayStr = fmtDateOnly(new Date());
+          const syncResult = await syncOutingFromOutings(existingRemoteRow.index, newChassis, todayStr, '');
           if(syncResult.changed){
             msg += ` Outing set to "${syncResult.outing}" (${syncResult.date}).`;
           }
@@ -1078,7 +1106,8 @@ async function addRow(value){
       // a newer qualifying outing than what's currently recorded, since
       // that table can gain rows independently of this app.
       try{
-        const syncResult = await syncOutingFromOutings(existingRemoteRow.index, existingRemoteRow.chassis, existingRemoteRow.dateAdded, existingRemoteRow.currentDate);
+        const cutoff = existingRemoteRow.onChassisSince || existingRemoteRow.dateAdded;
+        const syncResult = await syncOutingFromOutings(existingRemoteRow.index, existingRemoteRow.chassis, cutoff, existingRemoteRow.currentDate);
         if(syncResult.changed){
           uploadStatus.textContent = `Item ${id} already logged — outing data updated to "${syncResult.outing}" (${syncResult.date}).`;
           uploadStatus.style.color = 'var(--good)';
