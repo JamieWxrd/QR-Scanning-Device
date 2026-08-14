@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v9.4</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.1</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -87,6 +87,10 @@
 <div class="row" style="margin-top:12px;">
   <button class="btn-primary" id="mode-add-btn" style="flex:1;">Add/Update Part</button>
   <button class="btn-secondary" id="mode-remove-btn" style="flex:1;">Remove Part from Chassis</button>
+</div>
+<div class="row" style="margin-top:6px;">
+  <button class="btn-secondary" id="mode-inspection-btn" style="flex:1;">Log Inspection</button>
+  <button class="btn-secondary" id="mode-rebuild-btn" style="flex:1;">Log Rebuild</button>
 </div>
 <div style="margin-bottom:16px;"></div>
 
@@ -139,6 +143,16 @@
   <p class="sub" id="not-found-message" style="margin:0;">Item is not in the database.</p>
   <div class="row" style="margin-top:12px;">
     <button class="btn-primary" id="not-found-ok-btn">OK</button>
+  </div>
+</div>
+
+<div id="note-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:199;"></div>
+<div class="card" id="note-modal" style="display:none; position:fixed; top:30%; left:16px; right:16px; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+  <h2><span id="note-title">Add a Note</span></h2>
+  <p class="sub" style="margin:0 0 8px;">Optional — leave blank to skip. Shown as a cell comment on the Excel row.</p>
+  <textarea id="note-input" placeholder="Note (optional)" rows="3" style="width:100%; padding:10px; border-radius:10px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font-size:14px; resize:vertical;"></textarea>
+  <div class="row" style="margin-top:12px;">
+    <button class="btn-primary" id="note-continue-btn">Continue</button>
   </div>
 </div>
 
@@ -296,6 +310,34 @@ function showNotFoundPopup(id){
   });
 }
 
+const noteBackdrop = document.getElementById('note-backdrop');
+const noteModal = document.getElementById('note-modal');
+const noteTitle = document.getElementById('note-title');
+const noteInput = document.getElementById('note-input');
+const noteContinueBtn = document.getElementById('note-continue-btn');
+
+// Optional note popup shown right before an Inspection/Rebuild scan
+// completes. Resolves with the trimmed note text, or '' if left blank.
+function promptNote(actionLabel){
+  return new Promise(resolve => {
+    noteTitle.textContent = `Add a Note — ${actionLabel}`;
+    noteInput.value = '';
+    noteModal.style.display = 'block';
+    noteBackdrop.style.display = 'block';
+    setTimeout(() => noteInput.focus(), 50);
+
+    function finish(){
+      const val = noteInput.value.trim();
+      noteModal.style.display = 'none';
+      noteBackdrop.style.display = 'none';
+      noteContinueBtn.removeEventListener('click', finish);
+      setTimeout(() => manualInput.focus(), 50);
+      resolve(val);
+    }
+    noteContinueBtn.addEventListener('click', finish);
+  });
+}
+
 const camStatus = document.getElementById('cam-status');
 const camToggle = document.getElementById('cam-toggle');
 const video = document.getElementById('video');
@@ -323,10 +365,15 @@ const settingsPanel = document.getElementById('settings-panel');
 // Add mode (the original flow) logs new parts and lets you change an
 // existing part's chassis. Remove mode instead clears the chassis off
 // an existing part — scanning it blanks Ch '# and On Chassis Since only,
-// nothing else on the row changes.
+// nothing else on the row changes. Inspection/Rebuild modes each update
+// just their own "Last X" column to today — Since/Next Inspection and
+// Since/Next Rebuild are left as live Excel formulas, since they only
+// ever reference cells within ScanLog itself.
 let scanMode = 'add';
 const modeAddBtn = document.getElementById('mode-add-btn');
 const modeRemoveBtn = document.getElementById('mode-remove-btn');
+const modeInspectionBtn = document.getElementById('mode-inspection-btn');
+const modeRebuildBtn = document.getElementById('mode-rebuild-btn');
 // Focuses an input (so a hardware/Bluetooth scanner can feed it right
 // away) without popping up the on-screen keyboard on phones/tablets.
 // Briefly marking the field readonly stops mobile browsers from
@@ -342,15 +389,24 @@ function setScanMode(mode){
   scanMode = mode;
   modeAddBtn.className = mode === 'add' ? 'btn-primary' : 'btn-secondary';
   modeRemoveBtn.className = mode === 'remove' ? 'btn-primary' : 'btn-secondary';
+  modeInspectionBtn.className = mode === 'inspection' ? 'btn-primary' : 'btn-secondary';
+  modeRebuildBtn.className = mode === 'rebuild' ? 'btn-primary' : 'btn-secondary';
   modeAddBtn.style.flex = '1';
   modeRemoveBtn.style.flex = '1';
-  camStatus.textContent = mode === 'remove'
-    ? 'Remove Chassis mode — scan an existing part to clear its chassis.'
-    : 'Tap "Start Camera" to begin scanning.';
+  modeInspectionBtn.style.flex = '1';
+  modeRebuildBtn.style.flex = '1';
+  const modeMessages = {
+    remove: 'Remove Chassis mode — scan an existing part to clear its chassis.',
+    inspection: 'Log Inspection mode — scan an existing part to set its Last Inspection to today.',
+    rebuild: 'Log Rebuild mode — scan an existing part to set its Last Rebuild to today.'
+  };
+  camStatus.textContent = modeMessages[mode] || 'Tap "Start Camera" to begin scanning.';
   focusWithoutKeyboard(manualInput);
 }
 modeAddBtn.addEventListener('click', () => setScanMode('add'));
 modeRemoveBtn.addEventListener('click', () => setScanMode('remove'));
+modeInspectionBtn.addEventListener('click', () => setScanMode('inspection'));
+modeRebuildBtn.addEventListener('click', () => setScanMode('rebuild'));
 
 const settingsBackdrop = document.getElementById('settings-backdrop');
 const settingsClose = document.getElementById('settings-close');
@@ -1257,10 +1313,240 @@ async function removeChassisScan(value){
   }
 }
 
-// Routes a scanned/typed value to the Add or Remove flow depending on
-// which mode is currently selected at the top of the page.
+// Shared lookup used by Remove/Inspection/Rebuild modes: finds the
+// existing row for a scanned item's ID, or shows the Not Found popup and
+// signals the caller to stop.
+async function lookupExistingRowOrNotFound(id){
+  uploadStatus.textContent = 'Looking up item...';
+  uploadStatus.style.color = '';
+  camStatus.textContent = 'Looking up item...';
+  let existingRemoteRow = null;
+  try{
+    const existingRows = await fetchExistingRows();
+    existingRemoteRow = existingRows.find(r => r.id === id) || null;
+  } catch(e){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    const msg = 'Could not check SharePoint: ' + e.message;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
+    return { row: null, aborted: true };
+  }
+  if(!existingRemoteRow){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    uploadStatus.textContent = '';
+    camStatus.textContent = '';
+    await showNotFoundPopup(id);
+    return { row: null, aborted: true };
+  }
+  return { row: existingRemoteRow, aborted: false };
+}
+
+// Writes today's date into a single plain-value column on a row (Last
+// Inspection or Last Rebuild — everything else on the row is left
+// untouched), then reads the row back to verify it actually stuck, same
+// pattern as updateChassisOnRow. Since/Next Inspection and Since/Next
+// Rebuild stay as live Excel formulas — they only reference cells within
+// ScanLog itself, so there's no cross-sheet reliability issue there.
+async function writeLastDateColumn(rowIndex, columnIndex, columnLabel){
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
+  const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows/itemAt(index=${rowIndex})`;
+
+  const today = fmtDateOnly(new Date());
+  const values = new Array(19).fill(null);
+  values[columnIndex] = today;
+
+  const res = await fetch(rowUrl, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
+    body: JSON.stringify({ values: [ values ] })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    let data;
+    try{ data = JSON.parse(text); } catch(e){ data = null; }
+    throw new Error(`Graph error writing ${columnLabel} (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+  }
+
+  const verifyRes = await fetch(rowUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const verifyText = await verifyRes.text();
+  if(!verifyRes.ok){
+    throw new Error(`Graph error verifying ${columnLabel} (HTTP ${verifyRes.status}): ` + verifyText.slice(0, 200));
+  }
+  const verifyData = JSON.parse(verifyText);
+  const verifyRow = verifyData.values && verifyData.values[0] ? verifyData.values[0] : [];
+  const actual = String(verifyRow[columnIndex] || '').trim();
+  if(actual !== today){
+    throw new Error(`${columnLabel} did not stick — expected "${today}", found "${actual}" after write.`);
+  }
+  return { status: 'confirmed', date: actual };
+}
+
+// Parses a Graph range address like "ScanLog!F1:F200" or
+// "'Sheet Name'!F1:F200" into its sheet name and the column letters/row
+// number of the first cell.
+function parseRangeAddress(address){
+  const m = String(address || '').match(/^(?:'([^']+)'|([^!]+))!([A-Z]+)(\d+)/);
+  if(!m) return null;
+  return { sheet: m[1] || m[2], col: m[3], row: Number(m[4]) };
+}
+
+// Resolves the exact "Sheet!A1"-style cell address for a given column
+// name at a given table row index — needed because the Comments API
+// works on real worksheet cells, not table structured references.
+async function getCellAddressForTableColumn(token, sessionId, driveId, itemId, columnName, rowIndex){
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/${encodeURIComponent(columnName)}/range?$select=address`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+  const text = await res.text();
+  if(!res.ok){
+    throw new Error(`HTTP ${res.status} getting range for ${columnName}: ` + text.slice(0, 200));
+  }
+  const data = JSON.parse(text);
+  const parsed = parseRangeAddress(data.address);
+  if(!parsed){
+    throw new Error(`Could not parse column range address "${data.address}" for ${columnName}`);
+  }
+  // parsed.row is the header cell's row — the first data row is one below
+  // it, then rowIndex (0-based) counts down from there.
+  const targetRow = parsed.row + 1 + rowIndex;
+  return `${parsed.sheet}!${parsed.col}${targetRow}`;
+}
+
+// Adds a cell comment (the small triangle/corner indicator in Excel) with
+// the given text. Best-effort — a failure here shouldn't undo the actual
+// date write that already succeeded, so callers should treat this as
+// non-fatal and just report it.
+async function addCellComment(cellAddress, content){
+  const token = await getAccessToken();
+  const { driveId, itemId } = await resolveDriveItem();
+  const sessionId = await getWorkbookSessionId();
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/comments/add`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
+    body: JSON.stringify({ cellAddress, content, contentType: 'plain' })
+  });
+  const text = await res.text();
+  if(!res.ok){
+    let data;
+    try{ data = JSON.parse(text); } catch(e){ data = null; }
+    throw new Error(`Graph error adding comment (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+  }
+}
+
+// Attaches a note as a cell comment on the Last Inspection/Last Rebuild
+// cell for a given row, if a note was actually entered. Failures here are
+// caught and returned rather than thrown, since the underlying date write
+// already succeeded and shouldn't be reported as a failure.
+async function attachNoteIfAny(rowIndex, columnName, note){
+  if(!note) return { attached: false };
+  try{
+    const token = await getAccessToken();
+    const { driveId, itemId } = await resolveDriveItem();
+    const sessionId = await getWorkbookSessionId();
+    const cellAddress = await getCellAddressForTableColumn(token, sessionId, driveId, itemId, columnName, rowIndex);
+    await addCellComment(cellAddress, note);
+    return { attached: true };
+  } catch(err){
+    return { attached: false, error: err.message };
+  }
+}
+
+// Log Inspection mode: scanning an existing part sets Last Inspection to
+// today. Nothing else on the row changes.
+async function inspectionScan(value){
+  if(!value) return { ok: false, reason: 'Empty scan.' };
+  const now = Date.now();
+  if(value === lastValue && (now - lastTime) < 2000) return { ok: false, reason: 'duplicate' };
+  lastValue = value; lastTime = now;
+
+  const parsed = parseCode(value);
+  if(!parsed.partNumber || !parsed.batchNumber){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    return { ok: false, reason: 'Not a recognized code format.' };
+  }
+
+  const id = `${parsed.itemNumber}/${parsed.batchNumber}`;
+  const { row, aborted } = await lookupExistingRowOrNotFound(id);
+  if(aborted) return { ok: false, reason: 'not_found' };
+
+  const note = await promptNote('Inspection');
+
+  try{
+    const result = await writeLastDateColumn(row.index, 5, 'Last Inspection');
+    let msg = `Inspection logged for item ${id} — Last Inspection set to ${result.date}.`;
+    const noteResult = await attachNoteIfAny(row.index, 'Last Inspection', note);
+    if(noteResult.attached){
+      msg += ' Note added.';
+    } else if(noteResult.error){
+      msg += ` (Note failed: ${noteResult.error})`;
+    }
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--good)';
+    camStatus.textContent = msg;
+    if(navigator.vibrate) navigator.vibrate(60);
+    return { ok: true };
+  } catch(err){
+    const msg = 'Log inspection failed: ' + err.message;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
+    return { ok: false, reason: 'error' };
+  }
+}
+
+// Log Rebuild mode: scanning an existing part sets Last Rebuild to today.
+// Nothing else on the row changes.
+async function rebuildScan(value){
+  if(!value) return { ok: false, reason: 'Empty scan.' };
+  const now = Date.now();
+  if(value === lastValue && (now - lastTime) < 2000) return { ok: false, reason: 'duplicate' };
+  lastValue = value; lastTime = now;
+
+  const parsed = parseCode(value);
+  if(!parsed.partNumber || !parsed.batchNumber){
+    if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
+    return { ok: false, reason: 'Not a recognized code format.' };
+  }
+
+  const id = `${parsed.itemNumber}/${parsed.batchNumber}`;
+  const { row, aborted } = await lookupExistingRowOrNotFound(id);
+  if(aborted) return { ok: false, reason: 'not_found' };
+
+  const note = await promptNote('Rebuild');
+
+  try{
+    const result = await writeLastDateColumn(row.index, 8, 'Last Rebuild');
+    let msg = `Rebuild logged for item ${id} — Last Rebuild set to ${result.date}.`;
+    const noteResult = await attachNoteIfAny(row.index, 'Last Rebuild', note);
+    if(noteResult.attached){
+      msg += ' Note added.';
+    } else if(noteResult.error){
+      msg += ` (Note failed: ${noteResult.error})`;
+    }
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--good)';
+    camStatus.textContent = msg;
+    if(navigator.vibrate) navigator.vibrate(60);
+    return { ok: true };
+  } catch(err){
+    const msg = 'Log rebuild failed: ' + err.message;
+    uploadStatus.textContent = msg;
+    uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
+    return { ok: false, reason: 'error' };
+  }
+}
+
+// Routes a scanned/typed value to the right flow depending on which mode
+// is currently selected at the top of the page.
 function processScan(value){
-  return scanMode === 'remove' ? removeChassisScan(value) : addRow(value);
+  if(scanMode === 'remove') return removeChassisScan(value);
+  if(scanMode === 'inspection') return inspectionScan(value);
+  if(scanMode === 'rebuild') return rebuildScan(value);
+  return addRow(value);
 }
 
 function render(){
