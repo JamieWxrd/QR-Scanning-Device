@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.4</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -157,7 +157,7 @@
     <button class="btn-secondary" id="test-connection-btn">Test Connection</button>
   </div>
   <div class="row" style="margin-top:6px;">
-    <button class="btn-secondary" id="test-read-outing-btn">Test: Read First Outing</button>
+    <button class="btn-secondary" id="test-read-outing-btn">Test: Read First ID</button>
   </div>
   <div class="row" style="margin-top:6px;">
     <button class="btn-secondary" id="test-copy-outing-btn">Test: Copy Outing to Last Outing</button>
@@ -858,17 +858,17 @@ document.getElementById('test-read-outing-btn').addEventListener('click', async 
     const token = await getAccessToken();
     const { driveId, itemId } = await resolveDriveItem();
     const sessionId = await getWorkbookSessionId();
-    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range`;
+    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/ID/range`;
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
     const text = await res.text();
     if(!res.ok){
       throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
     }
     const data = JSON.parse(text);
-    // This range includes the header row at index 0 (that's the "Outing"
+    // This range includes the header row at index 0 (that's the "ID"
     // header text itself) — the first real data row is index 1.
     const firstValue = data.values && data.values[1] ? data.values[1][0] : undefined;
-    uploadStatus.textContent = `First data row of Outing column: "${firstValue}"`;
+    uploadStatus.textContent = `First data row of ID column: "${firstValue}"`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
@@ -1066,7 +1066,7 @@ async function removeChassisScan(value){
 
   try{
     const result = await removeChassisFromRow(existingRemoteRow.index);
-    const msg = `Chassis removed from item ${id}. Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}"`;
+    const msg = `Chassis removed from item ${id} (row index ${existingRemoteRow.index}). Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}"`;
     uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--good)';
     camStatus.textContent = msg;
