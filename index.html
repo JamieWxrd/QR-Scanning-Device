@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v9.2</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v9.3</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -687,6 +687,13 @@ async function syncChassisMetrics(rowIndex, chassis, cutoffDateRaw, currentDateR
 
   const outingsRows = await readOutingsTable(token, sessionId, driveId, itemId);
   const cutoffDate = parseDateFlexible(cutoffDateRaw);
+  // If a cutoff was actually supplied but couldn't be parsed, that's a
+  // bug worth surfacing loudly rather than silently letting every outing
+  // through unfiltered (which is what "if(cutoffDate && ...)" would do
+  // if cutoffDate ends up null).
+  if(cutoffDateRaw && !cutoffDate){
+    throw new Error(`Could not parse cutoff date "${cutoffDateRaw}" — refusing to sync without a date filter.`);
+  }
 
   const matching = outingsRows.filter(r => {
     if(r.chassis !== String(chassis).trim()) return false;
@@ -740,7 +747,9 @@ async function syncChassisMetrics(rowIndex, chassis, cutoffDateRaw, currentDateR
     changed: true,
     distanceSinceChassis,
     outing: outingWrite ? outingWrite.name : null,
-    date: outingWrite ? outingWrite.date : null
+    date: outingWrite ? outingWrite.date : null,
+    cutoffUsed: cutoffDateRaw,
+    matchedOutings: matching.map(r => `${r.name} (${r.date}, ${r.distance}km)`)
   };
 }
 
@@ -1145,7 +1154,7 @@ async function addRow(value){
         try{
           const todayStr = fmtDateOnly(new Date());
           const syncResult = await syncChassisMetrics(existingRemoteRow.index, newChassis, todayStr, '');
-          msg += ` Distance Since Changing Chassis: ${syncResult.distanceSinceChassis}.`;
+          msg += ` Distance Since Changing Chassis: ${syncResult.distanceSinceChassis} (cutoff: ${syncResult.cutoffUsed}, counted: ${syncResult.matchedOutings.join('; ') || 'none'}).`;
           if(syncResult.outing){
             msg += ` Outing set to "${syncResult.outing}" (${syncResult.date}).`;
           }
