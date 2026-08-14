@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.4</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.5</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -1070,9 +1070,16 @@ async function addRow(value){
     if(navigator.vibrate) navigator.vibrate([40, 60, 40]);
     const currentChassis = existingRemoteRow ? existingRemoteRow.chassis : '';
     const newChassis = await promptChassisUpdate(id, currentChassis);
+    // Mirror every status update to both uploadStatus (Settings panel,
+    // easy to miss) and camStatus (the visible line on the main scanning
+    // screen) so results are actually seen during normal use.
+    function setStatus(msg, color){
+      uploadStatus.textContent = msg;
+      uploadStatus.style.color = color || '';
+      camStatus.textContent = msg;
+    }
     if(newChassis && existingRemoteRow){
-      uploadStatus.textContent = 'Updating chassis...';
-      uploadStatus.style.color = '';
+      setStatus('Updating chassis...', '');
       try{
         const chassisResult = await updateChassisOnRow(existingRemoteRow.index, newChassis);
         let msg = `Chassis updated to ${chassisResult.chassis} (On Chassis Since: ${chassisResult.onChassisSince}) for item ${id} — verified.`;
@@ -1090,17 +1097,14 @@ async function addRow(value){
         } catch(syncErr){
           msg += ` (Outing sync failed: ${syncErr.message})`;
         }
-        uploadStatus.textContent = msg;
-        uploadStatus.style.color = 'var(--good)';
+        setStatus(msg, 'var(--good)');
       } catch(err){
-        uploadStatus.textContent = 'Chassis update failed: ' + err.message;
-        uploadStatus.style.color = 'var(--bad)';
+        setStatus('Chassis update failed: ' + err.message, 'var(--bad)');
       }
     } else if(newChassis && !existingRemoteRow){
       // Duplicate was only detected locally this session (not yet
       // confirmed in the live table) — nothing to patch remotely.
-      uploadStatus.textContent = 'Item was scanned locally this session — sign in and re-scan once it is on SharePoint to update its chassis.';
-      uploadStatus.style.color = 'var(--bad)';
+      setStatus('Item was scanned locally this session — sign in and re-scan once it is on SharePoint to update its chassis.', 'var(--bad)');
     } else if(!newChassis && existingRemoteRow){
       // Chassis left unchanged — still check whether the Outings table has
       // a newer qualifying outing than what's currently recorded, since
@@ -1109,15 +1113,12 @@ async function addRow(value){
         const cutoff = existingRemoteRow.onChassisSince || existingRemoteRow.dateAdded;
         const syncResult = await syncOutingFromOutings(existingRemoteRow.index, existingRemoteRow.chassis, cutoff, existingRemoteRow.currentDate);
         if(syncResult.changed){
-          uploadStatus.textContent = `Item ${id} already logged — outing data updated to "${syncResult.outing}" (${syncResult.date}).`;
-          uploadStatus.style.color = 'var(--good)';
+          setStatus(`Item ${id} already logged — outing data updated to "${syncResult.outing}" (${syncResult.date}).`, 'var(--good)');
         } else {
-          uploadStatus.textContent = `Item ${id} already logged — chassis and outing data unchanged.`;
-          uploadStatus.style.color = '';
+          setStatus(`Item ${id} already logged — chassis and outing data unchanged.`, '');
         }
       } catch(syncErr){
-        uploadStatus.textContent = `Item ${id} already logged — outing sync failed: ${syncErr.message}`;
-        uploadStatus.style.color = 'var(--bad)';
+        setStatus(`Item ${id} already logged — outing sync failed: ${syncErr.message}`, 'var(--bad)');
       }
     }
     return { ok: false, reason: 'already_logged' };
