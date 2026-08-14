@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.0</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.1</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -799,9 +799,12 @@ async function readColumnValue(token, sessionId, driveId, itemId, columnName, ro
   return data.values && data.values[rowIndex + 1] ? data.values[rowIndex + 1][0] : '';
 }
 
-// Currently: just copies Outing/Date/Distance (km) into Last Outing/
-// Last Date/Last Distance. Nothing else — Ch '#/On Chassis Since are
-// NOT touched by this yet.
+// Removes a chassis from a part: blanks Ch '# and On Chassis Since only.
+// Nothing else on the row is touched — Outing/Date/Distance (km) are now
+// plain, app-owned values (see syncOutingFromOutings) that simply stay as
+// they were, which is exactly the "keep the last used data" behavior we
+// want, with no separate Last Outing/Last Date/Last Distance copy step
+// needed any more.
 async function removeChassisFromRow(rowIndex){
   const token = await getAccessToken();
   const { driveId, itemId } = await resolveDriveItem();
@@ -809,18 +812,9 @@ async function removeChassisFromRow(rowIndex){
   const table = SP_TABLE_NAME;
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
 
-  // Force a recalculation before reading — otherwise the read below can
-  // come back stale even when Excel visibly shows real data.
-  await forceRecalculate();
-
-  const outingValue = await readColumnValue(token, sessionId, driveId, itemId, 'Outing', rowIndex);
-  const dateValue = await readColumnValue(token, sessionId, driveId, itemId, 'Date', rowIndex);
-  const distanceValue = await readColumnValue(token, sessionId, driveId, itemId, 'Distance (km)', rowIndex);
-
   const values = new Array(22).fill(null);
-  values[19] = outingValue ?? '';   // Last Outing
-  values[20] = dateValue ?? '';     // Last Date
-  values[21] = distanceValue ?? ''; // Last Distance
+  values[14] = '';  // On Chassis Since
+  values[15] = '';  // Ch '#
 
   const res = await fetch(rowUrl, {
     method: 'PATCH',
@@ -835,10 +829,10 @@ async function removeChassisFromRow(rowIndex){
   if(!res.ok){
     let data;
     try{ data = JSON.parse(text); } catch(e){ data = null; }
-    throw new Error(`Graph error copying Last values (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+    throw new Error(`Graph error removing chassis (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
 
-  return { status: 'confirmed', capturedOuting: outingValue, capturedDate: dateValue, capturedDistance: distanceValue };
+  return { status: 'confirmed' };
 }
 
 // Appends one row to the named Table in the SharePoint Excel workbook via
@@ -1309,7 +1303,7 @@ async function removeChassisScan(value){
 
   try{
     const result = await removeChassisFromRow(existingRemoteRow.index);
-    const msg = `Chassis removed from item ${id} (row index ${existingRemoteRow.index}). Captured — Outing: "${result.capturedOuting}", Date: "${result.capturedDate}", Distance: "${result.capturedDistance}"`;
+    const msg = `Chassis removed from item ${id}.`;
     uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--good)';
     camStatus.textContent = msg;
