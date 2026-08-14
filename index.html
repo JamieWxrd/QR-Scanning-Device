@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v9.1</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v9.2</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -987,20 +987,56 @@ async function postRowToExcel(row){
     throw new Error(`Graph error (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
   await forceRecalculate();
-  return { status: 'confirmed' };
+
+  // If a chassis number was entered for this brand-new part, check the
+  // Outings table right away in case that chassis already has a
+  // qualifying outing (on/after today, since On Chassis Since = today for
+  // a fresh row) — same app-owned logic used everywhere else, so a new
+  // part shows correct Outing/Date/Distance data immediately instead of
+  // waiting for the next scan.
+  let syncResult = null;
+  if(row.chassisNumber){
+    let addedIndex = null;
+    try{
+      const data = JSON.parse(text);
+      addedIndex = typeof data.index === 'number' ? data.index : null;
+    } catch(e){ /* fall through — addedIndex stays null */ }
+    if(addedIndex !== null){
+      try{
+        const todayStr = fmtDateOnly(new Date());
+        syncResult = await syncChassisMetrics(addedIndex, row.chassisNumber, todayStr, '');
+      } catch(e){
+        syncResult = { changed: false, error: e.message };
+      }
+    }
+  }
+
+  return { status: 'confirmed', syncResult };
 }
 
 async function uploadRow(row){
   if(!autoUploadToggle.checked) return;
   uploadStatus.textContent = 'Uploading...';
   uploadStatus.style.color = '';
+  camStatus.textContent = 'Uploading...';
   try{
-    await postRowToExcel(row);
-    uploadStatus.textContent = 'Uploaded to Excel.';
+    const result = await postRowToExcel(row);
+    let msg = 'Uploaded to Excel.';
+    if(result.syncResult){
+      if(result.syncResult.error){
+        msg += ` (Outing check failed: ${result.syncResult.error})`;
+      } else if(result.syncResult.outing){
+        msg += ` Outing found: "${result.syncResult.outing}" (${result.syncResult.date}), Distance Since Changing Chassis: ${result.syncResult.distanceSinceChassis}.`;
+      }
+    }
+    uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--good)';
+    camStatus.textContent = msg;
   } catch(err){
-    uploadStatus.textContent = 'Upload failed: ' + err.message;
+    const msg = 'Upload failed: ' + err.message;
+    uploadStatus.textContent = msg;
     uploadStatus.style.color = 'var(--bad)';
+    camStatus.textContent = msg;
   }
 }
 
