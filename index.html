@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.7</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.8</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -950,20 +950,33 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
     }
     await new Promise(resolve => setTimeout(resolve, 1500));
 
-    // Requesting both values and text — for formula cells these can come
-    // from different cache paths in Graph, so comparing them tells us
-    // whether "values" specifically is the broken one.
-    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range?$select=values,text,formulas`;
-    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
-    const text = await res.text();
-    if(!res.ok){
-      throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
+    // Outing's formula short-circuits to "" whenever [@Date] is blank, and
+    // Date is itself a formula — so read Ch '#, Date, and Outing together
+    // to see exactly where in the chain the value goes blank inside
+    // Graph's calc engine.
+    async function readCol(colName){
+      const colUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/${encodeURIComponent(colName)}/range?$select=values,text,formulas`;
+      const colRes = await fetch(colUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+      const colText = await colRes.text();
+      if(!colRes.ok){
+        throw new Error(`HTTP ${colRes.status} reading ${colName}: ` + colText.slice(0, 200));
+      }
+      const colData = JSON.parse(colText);
+      return {
+        value: colData.values && colData.values[1] ? colData.values[1][0] : undefined,
+        text: colData.text && colData.text[1] ? colData.text[1][0] : undefined,
+        formula: colData.formulas && colData.formulas[1] ? colData.formulas[1][0] : undefined
+      };
     }
-    const data = JSON.parse(text);
-    const rawValue = data.values && data.values[1] ? data.values[1][0] : undefined;
-    const displayText = data.text && data.text[1] ? data.text[1][0] : undefined;
-    const formula = data.formulas && data.formulas[1] ? data.formulas[1][0] : undefined;
-    uploadStatus.textContent = `values: "${rawValue}"  |  text: "${displayText}"  |  formula: ${formula}`;
+
+    const chassis = await readCol("Ch '#");
+    const date = await readCol('Date');
+    const outing = await readCol('Outing');
+
+    uploadStatus.innerHTML =
+      `Ch '#: values="${chassis.value}" text="${chassis.text}"<br>` +
+      `Date: values="${date.value}" text="${date.text}" formula=${date.formula}<br>` +
+      `Outing: values="${outing.value}" text="${outing.text}" formula=${outing.formula}`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
