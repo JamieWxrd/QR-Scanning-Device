@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.19</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v6.20</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -158,6 +158,9 @@
   </div>
   <div class="row" style="margin-top:6px;">
     <button class="btn-secondary" id="test-read-outing-btn">Test: Read First Outing</button>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button class="btn-secondary" id="test-copy-outing-btn">Test: Copy Outing to Last Outing</button>
   </div>
   <div class="status" id="upload-status" style="margin-top:8px;"></div>
 </div>
@@ -876,6 +879,53 @@ document.getElementById('test-read-outing-btn').addEventListener('click', async 
     // header text itself) — the first real data row is index 1.
     const firstValue = data.values && data.values[1] ? data.values[1][0] : undefined;
     uploadStatus.textContent = `First data row of Outing column: "${firstValue}"`;
+    uploadStatus.style.color = 'var(--good)';
+  } catch(err){
+    uploadStatus.textContent = 'Test failed: ' + err.message;
+    uploadStatus.style.color = 'var(--bad)';
+  }
+});
+
+// Pure diagnostic — reads the first data row's Outing value, then writes
+// it straight into that same row's Last Outing cell via the table-row
+// API. No chassis logic involved at all, so this isolates whether the
+// read+write mechanism itself works, independent of the rest of the
+// remove-chassis flow.
+document.getElementById('test-copy-outing-btn').addEventListener('click', async () => {
+  uploadStatus.textContent = 'Copying...';
+  uploadStatus.style.color = '';
+  try{
+    const token = await getAccessToken();
+    const { driveId, itemId } = await resolveDriveItem();
+    const sessionId = await getWorkbookSessionId();
+
+    const columnUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range`;
+    const columnRes = await fetch(columnUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+    const columnText = await columnRes.text();
+    if(!columnRes.ok){
+      throw new Error(`HTTP ${columnRes.status} reading Outing: ` + columnText.slice(0, 200));
+    }
+    const columnData = JSON.parse(columnText);
+    // Index 0 is the "Outing" header itself — index 1 is the first data row.
+    const outingValue = columnData.values && columnData.values[1] ? columnData.values[1][0] : '';
+
+    const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows/itemAt(index=0)`;
+    const values = new Array(22).fill(null);
+    values[19] = outingValue;  // Last Outing
+    const writeRes = await fetch(rowUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'workbook-session-id': sessionId
+      },
+      body: JSON.stringify({ values: [ values ] })
+    });
+    const writeText = await writeRes.text();
+    if(!writeRes.ok){
+      throw new Error(`HTTP ${writeRes.status} writing Last Outing: ` + writeText.slice(0, 200));
+    }
+    uploadStatus.textContent = `Copied "${outingValue}" from Outing into Last Outing on row 1. Check Excel.`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
