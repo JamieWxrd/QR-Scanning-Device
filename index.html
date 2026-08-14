@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.9</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.10</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -977,12 +977,12 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
       };
     }
 
-    const chassis = await readCol("Ch '#");
+    const chassis = await readCol('Ch #');
     const date = await readCol('Date');
     const outing = await readCol('Outing');
 
     uploadStatus.innerHTML =
-      `Ch '#: values="${chassis.value}" text="${chassis.text}"<br>` +
+      `Ch #: values="${chassis.value}" text="${chassis.text}"<br>` +
       `Date: values="${date.value}" text="${date.text}" formula=${date.formula}<br>` +
       `Outing: values="${outing.value}" text="${outing.text}" formula=${outing.formula}`;
     uploadStatus.style.color = 'var(--good)';
