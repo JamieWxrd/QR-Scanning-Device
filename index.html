@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.8</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.9</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -954,8 +954,16 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
     // Date is itself a formula — so read Ch '#, Date, and Outing together
     // to see exactly where in the chain the value goes blank inside
     // Graph's calc engine.
+    // Plain "/columns/Name" path segments only work for names with no
+    // special characters. "Ch '#" has both an apostrophe and a "#", so it
+    // needs the OData bracket-key form: columns('Name'), with any internal
+    // apostrophe doubled per OData escaping rules.
+    function columnSegment(colName){
+      const escaped = colName.replace(/'/g, "''");
+      return `columns('${encodeURIComponent(escaped)}')`;
+    }
     async function readCol(colName){
-      const colUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/${encodeURIComponent(colName)}/range?$select=values,text,formulas`;
+      const colUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/${columnSegment(colName)}/range?$select=values,text,formulas`;
       const colRes = await fetch(colUrl, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
       const colText = await colRes.text();
       if(!colRes.ok){
