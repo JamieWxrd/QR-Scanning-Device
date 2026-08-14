@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.5</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.7</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -931,24 +931,39 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
   uploadStatus.style.color = '';
   try{
     // Same read as "Test: Read First Outing" used to do, but this time we
-    // force a full recalculation inside this same session immediately
-    // before reading — testing whether the calculated Outing column is
-    // just stale within the persistent session vs. plain literal columns
-    // (like ID) which always read fresh.
-    await forceRecalculate();
-
+    // call the calculate endpoint directly (not via forceRecalculate,
+    // which silently swallows errors) so we can actually see whether the
+    // recalculation itself is succeeding before we read.
     const token = await getAccessToken();
     const { driveId, itemId } = await resolveDriveItem();
     const sessionId = await getWorkbookSessionId();
-    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range`;
+
+    const calcUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/application/calculate`;
+    const calcRes = await fetch(calcUrl, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
+      body: JSON.stringify({ calculationType: 'FullRebuild' })
+    });
+    const calcText = await calcRes.text();
+    if(!calcRes.ok){
+      throw new Error(`Recalculate call failed (HTTP ${calcRes.status}): ` + calcText.slice(0, 300));
+    }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    // Requesting both values and text — for formula cells these can come
+    // from different cache paths in Graph, so comparing them tells us
+    // whether "values" specifically is the broken one.
+    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range?$select=values,text,formulas`;
     const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
     const text = await res.text();
     if(!res.ok){
       throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
     }
     const data = JSON.parse(text);
-    const firstValue = data.values && data.values[1] ? data.values[1][0] : undefined;
-    uploadStatus.textContent = `After recalc — first data row of Outing column: "${firstValue}"`;
+    const rawValue = data.values && data.values[1] ? data.values[1][0] : undefined;
+    const displayText = data.text && data.text[1] ? data.text[1][0] : undefined;
+    const formula = data.formulas && data.formulas[1] ? data.formulas[1][0] : undefined;
+    uploadStatus.textContent = `values: "${rawValue}"  |  text: "${displayText}"  |  formula: ${formula}`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
