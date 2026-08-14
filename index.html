@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.1</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.2</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -695,6 +695,10 @@ async function removeChassisFromRow(rowIndex){
   const sessionId = await getWorkbookSessionId();
   const table = SP_TABLE_NAME;
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(table)}/rows/itemAt(index=${rowIndex})`;
+
+  // Force a recalculation before reading — otherwise the read below can
+  // come back stale even when Excel visibly shows real data.
+  await forceRecalculate();
 
   const outingValue = await readColumnValue(token, sessionId, driveId, itemId, 'Outing', rowIndex);
   const dateValue = await readColumnValue(token, sessionId, driveId, itemId, 'Date', rowIndex);
