@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.13</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.15</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -1001,7 +1001,7 @@ document.getElementById('test-read-outing-recalc-btn').addEventListener('click',
     // Ch '# 100 — this tells us whether the underlying data is stale/
     // missing on Graph's side, or whether the data is fine and it's
     // specifically the cross-sheet formula evaluation that's broken.
-    const outingsChassis = await readCol('Outings', "Ch '#");
+    const outingsChassis = await readCol('Outings', "Ch #");
     const outingsDate = await readCol('Outings', 'Date');
     const outingsName = await readCol('Outings', 'Outing Name');
     let outingsRowsHtml = '';
