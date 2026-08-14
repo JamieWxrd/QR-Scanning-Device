@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.1</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.2</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -1426,13 +1426,13 @@ async function addCellComment(cellAddress, content){
   const res = await fetch(url, {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
-    body: JSON.stringify({ cellAddress, content, contentType: 'plain' })
+    body: JSON.stringify({ cellAddress, content, contentType: 'Plain' })
   });
   const text = await res.text();
   if(!res.ok){
     let data;
     try{ data = JSON.parse(text); } catch(e){ data = null; }
-    throw new Error(`Graph error adding comment (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
+    throw new Error(`Graph error adding comment to ${cellAddress} (HTTP ${res.status}): ` + (data ? JSON.stringify(data.error || data) : text).slice(0, 300));
   }
 }
 
