@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v8.6</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v9.1</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -659,16 +659,26 @@ async function readOutingsTable(token, sessionId, driveId, itemId){
   return rows;
 }
 
-// The app-side replacement for ScanLog's Outing/Date/Distance (km)
-// formulas. Finds the most recent Outings row for the given chassis, but
-// only counts outings on/after cutoffDateRaw — this should be the row's
-// "On Chassis Since" date, NOT Date Added, so that when a part switches
-// chassis it doesn't pick up outings that chassis did before this part
-// was ever mounted on it. Only writes back if the found outing is
-// actually newer than what's currently in ScanLog's Date column — per
-// "if the date in the ScanLog date column is after the date in the
-// outings table for the current chassis then don't change anything."
-async function syncOutingFromOutings(rowIndex, chassis, cutoffDateRaw, currentDateRaw){
+// The app-side replacement for ScanLog's Outing/Date/Distance (km) and
+// Distance Since Changing Chassis formulas — both depend on the
+// cross-sheet Outings table, which Graph wasn't evaluating reliably.
+// Total Distance stays a live Excel formula (Banked Distance + Distance
+// Since Changing Chassis) — that's fine now, since once Distance Since
+// Changing Chassis is a plain app-written value, Total Distance no
+// longer needs to reach into Outings at all; it only references other
+// cells in ScanLog itself. Only counts outings on/after cutoffDateRaw —
+// this should be the row's "On Chassis Since" date, NOT Date Added, so
+// that when a part switches chassis it doesn't pick up outings that
+// chassis did before this part was ever mounted on it.
+//
+// Distance Since Changing Chassis is the SUM of every qualifying outing's
+// distance (matches the original SUMIFS formula) and is always
+// recomputed/written. Outing/Date/Distance (km) track the single MOST
+// RECENT qualifying outing, and are only written if it's actually newer
+// than what's already recorded — per "if the date in the ScanLog date
+// column is after the date in the outings table for the current chassis
+// then don't change anything."
+async function syncChassisMetrics(rowIndex, chassis, cutoffDateRaw, currentDateRaw){
   if(!chassis) return { changed: false, reason: 'no_chassis' };
 
   const token = await getAccessToken();
@@ -685,27 +695,37 @@ async function syncOutingFromOutings(rowIndex, chassis, cutoffDateRaw, currentDa
     if(cutoffDate && d < cutoffDate) return false;
     return true;
   });
-  if(matching.length === 0) return { changed: false, reason: 'no_matching_outings' };
 
-  let best = matching[0];
-  let bestDate = parseDateFlexible(best.date);
+  let distanceSinceChassis = 0;
   for(const r of matching){
-    const d = parseDateFlexible(r.date);
-    if(d && (!bestDate || d > bestDate)){ best = r; bestDate = d; }
+    const dist = Number(r.distance);
+    if(!isNaN(dist)) distanceSinceChassis += dist;
   }
-  if(!bestDate) return { changed: false, reason: 'no_valid_date' };
 
-  const currentDate = parseDateFlexible(currentDateRaw);
-  if(currentDate && currentDate >= bestDate){
-    // ScanLog's Date is already caught up (or ahead) — leave untouched.
-    return { changed: false, reason: 'already_current' };
+  let outingWrite = null;
+  if(matching.length > 0){
+    let best = matching[0];
+    let bestDate = parseDateFlexible(best.date);
+    for(const r of matching){
+      const d = parseDateFlexible(r.date);
+      if(d && (!bestDate || d > bestDate)){ best = r; bestDate = d; }
+    }
+    const currentDate = parseDateFlexible(currentDateRaw);
+    if(bestDate && !(currentDate && currentDate >= bestDate)){
+      outingWrite = best;
+    }
   }
 
   const rowUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/rows/itemAt(index=${rowIndex})`;
+
   const values = new Array(19).fill(null);
-  values[16] = best.name;      // Outing
-  values[17] = best.date;      // Date
-  values[18] = best.distance;  // Distance (km)
+  values[13] = distanceSinceChassis;   // Distance Since Changing Chassis — Total Distance (formula) picks this up on its own
+  if(outingWrite){
+    values[16] = outingWrite.name;     // Outing
+    values[17] = outingWrite.date;     // Date
+    values[18] = outingWrite.distance; // Distance (km)
+  }
+
   const res = await fetch(rowUrl, {
     method: 'PATCH',
     headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'workbook-session-id': sessionId },
@@ -713,9 +733,15 @@ async function syncOutingFromOutings(rowIndex, chassis, cutoffDateRaw, currentDa
   });
   const text = await res.text();
   if(!res.ok){
-    throw new Error(`Graph error writing Outing/Date/Distance (HTTP ${res.status}): ` + text.slice(0, 300));
+    throw new Error(`Graph error writing chassis metrics (HTTP ${res.status}): ` + text.slice(0, 300));
   }
-  return { changed: true, outing: best.name, date: best.date, distance: best.distance };
+
+  return {
+    changed: true,
+    distanceSinceChassis,
+    outing: outingWrite ? outingWrite.name : null,
+    date: outingWrite ? outingWrite.date : null
+  };
 }
 
 // Updates just the chassis-related cells of an existing row (Ch '#,
@@ -779,9 +805,9 @@ async function updateChassisOnRow(rowIndex, newChassis){
   // Full 19-column ScanLog row, null everywhere except the cells we're
   // actually changing — the null-skips-the-cell trick used by
   // buildLifingRow/rows/add keeps every other value on the row untouched.
-  // Distance Since Changing Chassis is still a live formula the app never
-  // touches; Outing/Date/Distance (km) are app-owned plain values handled
-  // separately by syncOutingFromOutings.
+  // Total Distance, Distance Since Changing Chassis, and Outing/Date/
+  // Distance (km) are all app-owned plain values handled separately by
+  // syncChassisMetrics, called right after this.
   const values = new Array(19).fill(null);
   values[12] = currentTotalDistance;     // Banked Distance — freshly read Total Distance, right before this write
   values[14] = fmtDateOnly(new Date());  // On Chassis Since
@@ -845,7 +871,7 @@ async function readColumnValue(token, sessionId, driveId, itemId, columnName, ro
 
 // Removes a chassis from a part: blanks Ch '# and On Chassis Since only.
 // Nothing else on the row is touched — Outing/Date/Distance (km) are now
-// plain, app-owned values (see syncOutingFromOutings) that simply stay as
+// plain, app-owned values (see syncChassisMetrics) that simply stay as
 // they were, which is exactly the "keep the last used data" behavior we
 // want, with no separate Last Outing/Last Date/Last Distance copy step
 // needed any more.
@@ -930,7 +956,7 @@ function buildLifingRow(row){
     null,                     // Distance Since Changing Chassis — formula
     scanDate,                 // On Chassis Since — date the current chassis took effect
     row.chassisNumber || '',  // Ch '#
-    null,                     // Outing — app-owned plain value, filled in by syncOutingFromOutings once qualifying
+    null,                     // Outing — app-owned plain value, filled in by syncChassisMetrics once qualifying
     null,                     // Date — app-owned plain value
     null                      // Distance (km) — app-owned plain value
   ];
@@ -1082,12 +1108,13 @@ async function addRow(value){
         // whatever Date was there belonged to the previous chassis.
         try{
           const todayStr = fmtDateOnly(new Date());
-          const syncResult = await syncOutingFromOutings(existingRemoteRow.index, newChassis, todayStr, '');
-          if(syncResult.changed){
+          const syncResult = await syncChassisMetrics(existingRemoteRow.index, newChassis, todayStr, '');
+          msg += ` Distance Since Changing Chassis: ${syncResult.distanceSinceChassis}.`;
+          if(syncResult.outing){
             msg += ` Outing set to "${syncResult.outing}" (${syncResult.date}).`;
           }
         } catch(syncErr){
-          msg += ` (Outing sync failed: ${syncErr.message})`;
+          msg += ` (Metrics sync failed: ${syncErr.message})`;
         }
         setStatus(msg, 'var(--good)');
       } catch(err){
@@ -1103,14 +1130,14 @@ async function addRow(value){
       // that table can gain rows independently of this app.
       try{
         const cutoff = existingRemoteRow.onChassisSince || existingRemoteRow.dateAdded;
-        const syncResult = await syncOutingFromOutings(existingRemoteRow.index, existingRemoteRow.chassis, cutoff, existingRemoteRow.currentDate);
-        if(syncResult.changed){
-          setStatus(`Item ${id} already logged — outing data updated to "${syncResult.outing}" (${syncResult.date}).`, 'var(--good)');
-        } else {
-          setStatus(`Item ${id} already logged — chassis and outing data unchanged.`, '');
+        const syncResult = await syncChassisMetrics(existingRemoteRow.index, existingRemoteRow.chassis, cutoff, existingRemoteRow.currentDate);
+        let msg = `Item ${id} already logged — Distance Since Changing Chassis: ${syncResult.distanceSinceChassis}.`;
+        if(syncResult.outing){
+          msg += ` Outing updated to "${syncResult.outing}" (${syncResult.date}).`;
         }
+        setStatus(msg, 'var(--good)');
       } catch(syncErr){
-        setStatus(`Item ${id} already logged — outing sync failed: ${syncErr.message}`, 'var(--bad)');
+        setStatus(`Item ${id} already logged — metrics sync failed: ${syncErr.message}`, 'var(--bad)');
       }
     }
     return { ok: false, reason: 'already_logged' };
