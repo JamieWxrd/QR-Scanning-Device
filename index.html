@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.4</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v7.5</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -161,6 +161,9 @@
   </div>
   <div class="row" style="margin-top:6px;">
     <button class="btn-secondary" id="test-copy-outing-btn">Test: Copy Outing to Last Outing</button>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button class="btn-secondary" id="test-read-outing-recalc-btn">Test: Recalc then Read First Outing</button>
   </div>
   <div class="status" id="upload-status" style="margin-top:8px;"></div>
 </div>
@@ -916,6 +919,36 @@ document.getElementById('test-copy-outing-btn').addEventListener('click', async 
       throw new Error(`HTTP ${writeRes.status} writing Last Outing: ` + writeText.slice(0, 200));
     }
     uploadStatus.textContent = `Copied "${outingValue}" from Outing into Last Outing on row 1. Check Excel.`;
+    uploadStatus.style.color = 'var(--good)';
+  } catch(err){
+    uploadStatus.textContent = 'Test failed: ' + err.message;
+    uploadStatus.style.color = 'var(--bad)';
+  }
+});
+
+document.getElementById('test-read-outing-recalc-btn').addEventListener('click', async () => {
+  uploadStatus.textContent = 'Recalculating...';
+  uploadStatus.style.color = '';
+  try{
+    // Same read as "Test: Read First Outing" used to do, but this time we
+    // force a full recalculation inside this same session immediately
+    // before reading — testing whether the calculated Outing column is
+    // just stale within the persistent session vs. plain literal columns
+    // (like ID) which always read fresh.
+    await forceRecalculate();
+
+    const token = await getAccessToken();
+    const { driveId, itemId } = await resolveDriveItem();
+    const sessionId = await getWorkbookSessionId();
+    const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/tables/${encodeURIComponent(SP_TABLE_NAME)}/columns/Outing/range`;
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'workbook-session-id': sessionId } });
+    const text = await res.text();
+    if(!res.ok){
+      throw new Error(`HTTP ${res.status}: ` + text.slice(0, 200));
+    }
+    const data = JSON.parse(text);
+    const firstValue = data.values && data.values[1] ? data.values[1][0] : undefined;
+    uploadStatus.textContent = `After recalc — first data row of Outing column: "${firstValue}"`;
     uploadStatus.style.color = 'var(--good)';
   } catch(err){
     uploadStatus.textContent = 'Test failed: ' + err.message;
