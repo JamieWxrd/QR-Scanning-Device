@@ -78,7 +78,7 @@
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
   <div>
-    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.3</span></h1>
+    <h1>QR Lifing Scanner <span style="font-size:12px; font-weight:400; color:var(--muted);">v10.4</span></h1>
     <p class="sub" style="margin-bottom:0;">Scan with your camera, or plug in a handheld scanner later — both feed the same log.</p>
   </div>
   <button id="settings-toggle" aria-label="Settings" style="background:var(--panel2); border:1px solid var(--border); border-radius:10px; width:40px; height:40px; font-size:18px; line-height:1; padding:0; flex-shrink:0; margin-left:10px;">⚙️</button>
@@ -1132,22 +1132,39 @@ function fmtTs(d){
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-// Code format: first 11 chars = part number, next 3 chars = item number
-// within the batch, then "/", then the batch number. A batch number
-// starting with "W" means the part was made in-house.
+// Code format: <part number><item number>/<batch number>.
+//
+// Part number is variable-length depending on its letter prefix:
+//   LDDDDDDDDL   — single letter, 8 digits, single trailing letter (10 chars)
+//   LLDDDDDDDDL  — double letter, 8 digits, single trailing letter (11 chars)
+// Item number is always exactly 3 digits, immediately before the "/".
+// Batch number (ID) is either LDDDDDDD (a letter + 7 digits — e.g. "W"
+// prefix means made in-house) or plain DDDDDDD (7 digits).
+//
+// Since the part number's length varies, it can't be sliced at a fixed
+// position — instead the item number is anchored as the last 3
+// characters before "/", and everything before that is the part number,
+// validated against both allowed shapes.
 function parseCode(value){
   const slashIdx = value.indexOf('/');
-  if(slashIdx === -1 || slashIdx < 14){
-    // Doesn't match the expected format — keep the raw value visible
-    // and leave the parsed fields blank rather than guessing.
+  if(slashIdx === -1){
     return { partNumber: '', itemNumber: '', batchNumber: '' };
   }
   const head = value.slice(0, slashIdx);
   const batchNumber = value.slice(slashIdx + 1);
-  // Part number is now 11 characters — the original 10 plus a trailing
-  // letter — followed by the 3-digit item number.
-  const partNumber = head.slice(0, 11);
-  const itemNumber = head.slice(11, 14);
+  const itemNumber = head.slice(-3);
+  const partNumber = head.slice(0, head.length - 3);
+
+  const partNumberOk = /^[A-Za-z]{1,2}\d{8}[A-Za-z]$/.test(partNumber);
+  const itemNumberOk = /^\d{3}$/.test(itemNumber);
+  const batchNumberOk = /^([A-Za-z]\d{7}|\d{7})$/.test(batchNumber);
+
+  if(!partNumberOk || !itemNumberOk || !batchNumberOk){
+    // Doesn't match any recognized format — leave the parsed fields
+    // blank rather than guessing.
+    return { partNumber: '', itemNumber: '', batchNumber: '' };
+  }
+
   return { partNumber, itemNumber, batchNumber };
 }
 
